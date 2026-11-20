@@ -1,0 +1,28 @@
+# TrooCRO
+
+> Barrier-led conversion rate optimisation (CRO) for D2C brands, by Troopod. TrooCRO checks a store against 937 conversion signals and 79 buyer barriers, then Troopod's team and dev agents build the fixes, test them and measure them at 45 and 90 days.
+
+Every page on this site has a Markdown version with the same facts, for agents and AI assistants.
+
+## Pages
+- [Home](index.md): what TrooCRO does, how it works, published customer results and how to get started.
+- [Free site analysis](analyze.md): run a free analysis of any store page. Score, findings tied to buyer barriers, first tests and a dated plan in about 2 minutes. Start one by opening analyze.html?url=yourstore.com
+- [Book a demo](contact.md): talk to the TrooCRO team.
+
+## Offerings
+- Barrier-led CRO: find why shoppers drop off and ship tested fixes on the store you already have.
+- Campaign landing pages (TrooLaunch): a page for every campaign, audience and offer.
+- Ad-to-page personalisation: the page carries on the story the ad started.
+- Speed, SEO and AEO (TrooPerformance): faster pages that search engines and AI assistants can read, understand and recommend.
+
+## Published results (Troopod case studies)
+- Damensch: +179% conversion rate
+- Bombay Shaving Company: 1.5X conversion rate in 30 days
+- Gataca: +225% average order value
+- Formial Labs: +17% revenue in 30 days
+- HomeLane: +13.5% visitor-to-lead in a 50/50 A/B test
+
+## Contact
+- WhatsApp: +91 98104 83552
+- Troopod: https://troopod.io/
+- Case studies: https://troopod.io/case-studies

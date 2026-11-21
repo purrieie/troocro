@@ -204,35 +204,41 @@
 
   <!-- LIVE SCAN -->
   <section data-panel="scan" hidden aria-labelledby="an-scan-title">
-    <div class="wrap an-scan">
-      <div class="an-scan-top">
-        <div><span class="eyebrow">Your analysis, step by step</span><h2 class="h2" id="an-scan-title">Reading <b data-s-host>your store</b></h2></div>
-        <span class="an-tag live" data-s-status>Scanning</span>
+    <div class="wrap ag">
+      <div class="ag-top">
+        <div><span class="eyebrow">TrooCRO agents at work</span><h2 class="h2" id="an-scan-title"><span data-s-verb>Reading</span> <b data-s-host>your store</b></h2></div>
+        <div class="ag-top-r"><span class="an-tag live" data-s-status>Scanning</span><span class="an-label" data-s-time>0:00</span></div>
       </div>
-      <div class="an-prog"><div class="an-prog-bar" role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-s-barwrap><i data-s-bar></i></div><span class="an-label" data-s-time>0:00</span></div>
-      <div class="an-scan-grid">
-        <aside class="an-card an-steps" data-s-steps aria-label="Scan stages"></aside>
-        <div>
-          <div class="an-live-top">
-            <div class="an-card an-first" data-s-first>
-              <div class="an-shot" data-s-shot><div class="ph"><i style="width:60%"></i><i class="b"></i><i></i><i style="width:80%"></i><i style="width:45%"></i><i class="c"></i></div><div class="shimmer"></div></div>
-              <div class="meta">
-                <span class="an-label">First look at your page</span>
-                <div class="title" data-s-title>Opening your page…</div>
-                <dl class="an-kv" data-s-kv></dl>
+      <div class="an-prog"><div class="an-prog-bar" role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-s-barwrap><i data-s-bar></i></div><span class="an-label" data-s-pct>0% done</span></div>
+      <div class="ag-grid">
+        <div class="ag-main">
+          <div class="ag-canvas" data-ag-canvas>
+            <div class="bbar"><i></i><i></i><i></i><span class="url" data-ag-url>Opening your page…</span><span class="ag-livepill"><b></b>Live</span></div>
+            <div class="ag-view">
+              <div class="ag-page" data-ag-page><div class="pg-loading"><i></i><i></i><i></i></div></div>
+              <div class="ag-sweep" data-ag-sweep aria-hidden="true"></div>
+              <div class="ag-fx" data-ag-fx aria-hidden="true"></div>
+              <div class="ag-done" data-s-done hidden>
+                <div class="ring" data-s-ring><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="trk" cx="60" cy="60" r="52" stroke-width="8"/><circle class="val" cx="60" cy="60" r="52" stroke-width="8" stroke-dasharray="326.7" stroke-dashoffset="326.7"/></svg><div class="num"><b data-s-score>–</b><span>/ 100</span></div></div>
+                <div><span class="an-label">Your report is ready</span><p class="ag-done-v" data-s-verdict></p><button class="btn btn-light btn-sm" type="button" data-s-open>See my report</button></div>
               </div>
             </div>
-            <div class="an-card an-mini-score">
-              <div class="ring sm" data-s-ring><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="trk" cx="60" cy="60" r="52" stroke-width="8"/><circle class="val" cx="60" cy="60" r="52" stroke-width="8" stroke-dasharray="326.7" stroke-dashoffset="326.7"/></svg><div class="num"><b data-s-score>–</b><span>/ 100</span></div></div>
-              <div><span class="an-label" style="display:block;margin-top:12px" data-s-score-label>Scoring as checks finish</span></div>
-            </div>
           </div>
-          <div class="an-card an-feed">
-            <div class="an-feed-head"><h3 class="an-h4">What TrooCRO found</h3><span class="an-label" data-s-count>Newest first</span></div>
-            <div class="an-feed-list" data-s-feed aria-live="polite"><div class="an-feed-empty">Findings land here as each check finishes.</div></div>
+          <div class="ag-tally" aria-live="polite">
+            <div class="bad"><b data-t-fix>0</b><span>to fix</span></div>
+            <div class="ok"><b data-t-pass>0</b><span>passing</span></div>
+            <div><b data-t-bar>0</b><span>buyer barriers</span></div>
+            <div><b data-t-ag>0 of 8</b><span>agents done</span></div>
           </div>
-          <div class="an-scan-done" data-s-done hidden><span><b>Your report is ready.</b> <span class="an-sub" style="display:inline">Opening it now.</span></span><button class="btn btn-light btn-sm" type="button" data-s-open>See my report</button></div>
         </div>
+        <aside class="ag-side" aria-label="Agents">
+          <div class="ag-side-h"><span class="an-label">Your agents</span><span class="an-label" data-ag-active>Starting</span></div>
+          <div class="ag-roster" data-ag-roster></div>
+        </aside>
+      </div>
+      <div class="ag-log">
+        <div class="ag-log-h"><span class="an-label">Agent log</span><span class="an-label" data-s-count>0 lines</span></div>
+        <ol data-ag-log aria-live="polite"></ol>
       </div>
     </div>
   </section>

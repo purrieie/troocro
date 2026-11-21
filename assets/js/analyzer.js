@@ -294,64 +294,128 @@
     if (q && (q.id === "category" || q.id === "aovBand") && QA[q.id] === undefined && doc.body.getAttribute("data-an-view") === "questions") renderQ(qi, 0);
   }
 
-  /* ---------------- live scan ---------------- */
+  /* ---------------- live scan: agents at work ---------------- */
+  var REDUCED = !!(win.matchMedia && win.matchMedia("(prefers-reduced-motion: reduce)").matches);
   var STAGES = [
-    { id: "open", phase: "Read", label: "Opening your page" },
-    { id: "structure", phase: "Read", label: "Reading your page's structure" },
-    { id: "business", phase: "Read", label: "Understanding your business" },
-    { id: "signals", phase: "Diagnose", label: "Checking conversion signals" },
-    { id: "barriers", phase: "Diagnose", label: "Tagging buyer barriers" },
-    { id: "speed", phase: "Measure", label: "Measuring page speed" },
-    { id: "search", phase: "Measure", label: "Checking search and AI answers" },
-    { id: "a11y", phase: "Measure", label: "Checking accessibility" },
-    { id: "compare", phase: "Plan", label: "Comparing you with your market" },
-    { id: "plan", phase: "Plan", label: "Planning your first tests" }
+    { id: "open", agent: "reader" }, { id: "structure", agent: "reader" }, { id: "business", agent: "reader" },
+    { id: "signals", agent: "conv" }, { id: "barriers", agent: "barrier" }, { id: "speed", agent: "speed" },
+    { id: "search", agent: "search" }, { id: "a11y", agent: "a11y" }, { id: "compare", agent: "market" }, { id: "plan", agent: "plan" }
   ];
-  var stState = {}, tickT = 0, feedN = 0;
+  var AGENTS = [
+    { id: "reader", name: "Reader", role: "Opens and maps your page", c: "#CBBEFD", park: [0.93, 0.12] },
+    { id: "conv", name: "Conversion", role: "Runs the conversion checks", c: "#8B6BF7", park: [0.93, 0.24] },
+    { id: "barrier", name: "Barriers", role: "Tags what stops buyers", c: "#EF6B57", park: [0.93, 0.36] },
+    { id: "speed", name: "Speed", role: "Times your page on a phone", c: "#E5A93D", park: [0.93, 0.48] },
+    { id: "search", name: "Search & AI", role: "Checks Google and AI answers", c: "#4CC38A", park: [0.93, 0.6] },
+    { id: "a11y", name: "Access", role: "Checks it works for everyone", c: "#7FD1C7", park: [0.93, 0.72] },
+    { id: "market", name: "Market", role: "Compares you with your market", c: "#A68EFA", park: [0.93, 0.84] },
+    { id: "plan", name: "Planner", role: "Plans your first tests", c: "#F4F3F8", park: [0.93, 0.94] }
+  ];
+  var AG = {}; AGENTS.forEach(function (a) { AG[a.id] = a; });
+  var REGION_OF = {
+    hero_single_action: "cta", cta_competition: "cta", cta_copy: "cta", pdp_atc: "cta", pdp_sticky: "cta",
+    pdp_price: "price", pdp_anchor: "price", pdp_emi: "price", pdp_bundle: "price",
+    pdp_reviews: "reviews", proof_density: "reviews", cat_brandproof: "reviews",
+    pdp_trust: "trust", pdp_guarantee: "trust", pdp_ship_returns: "trust", pdp_cod: "trust", pdp_pincode: "trust", pdp_urgency: "trust",
+    pdp_faq: "content", pdp_variants: "details", contact: "footer", live_chat: "footer", policies: "footer", address: "footer",
+    newsletter: "footer", founder_story: "nav", search: "nav", viewport: "nav", lang: "nav"
+  };
+  var stState = {}, agState = {}, tickT = 0, feedN = 0, t0Scan = 0, pinN = {}, tally = { fix: 0, pass: 0 }, thinkT = {};
+
+  function regionFor(key) { return REGION_OF[key] || (/^cat_/.test(key) ? "title" : "content"); }
+  function fmtT() { var s = Math.floor((Date.now() - t0Scan) / 1000); return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2); }
+  function clip2(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1).replace(/\s+\S*$/, "") + "…" : s; }
 
   function buildStages() {
-    var box = $("[data-s-steps]"), html = "", phase = "", pi = 0;
-    STAGES.forEach(function (s) {
-      if (s.phase !== phase) { if (phase) html += "</div>"; phase = s.phase; pi++; html += '<div class="an-phase"><span class="an-label">0' + pi + " · " + esc(s.phase) + "</span>"; }
-      html += '<div class="an-stage" data-stage="' + s.id + '"><span class="st">' + ICON_CHECK + '</span><span><span class="lb">' + esc(s.label) + '</span><span class="d"></span></span></div>';
-    });
-    box.innerHTML = html + "</div>";
-    stState = {};
+    stState = {}; agState = {}; pinN = {}; tally = { fix: 0, pass: 0 };
+    Object.keys(thinkT).forEach(function (k) { clearInterval(thinkT[k]); }); thinkT = {};
+    $("[data-ag-roster]").innerHTML = AGENTS.map(function (a) {
+      return '<div class="ag-a" data-ag="' + a.id + '" style="--c:' + a.c + '"><span class="ag-av"><i></i><b>' + esc(a.name.charAt(0)) + '</b></span><div class="ag-a-b"><div class="ag-a-t"><b>' + esc(a.name) + '</b><span class="ag-st">Queued</span></div><div class="ag-a-r">' + esc(a.role) + '</div><div class="ag-a-s" data-ag-s></div></div></div>';
+    }).join("");
+    var fx = $("[data-ag-fx]");
+    fx.innerHTML = AGENTS.map(function (a) {
+      return '<div class="ag-cur" data-cur="' + a.id + '" style="--c:' + a.c + '"><svg viewBox="0 0 16 16" width="16" height="16"><path d="M2 1.5 14 7.2 8.6 8.6 6.6 14Z" fill="var(--c)" stroke="#0A0A0C" stroke-width="1.2" stroke-linejoin="round"/></svg><span>' + esc(a.name) + "</span></div>";
+    }).join("");
+    $("[data-ag-log]").innerHTML = "";
+    $("[data-ag-page]").innerHTML = '<div class="pg-loading"><i></i><i></i><i></i></div>';
+    $("[data-ag-url]").textContent = "Opening " + S.host + "…";
+    updTally(); updAgCount();
+  }
+  function updTally() {
+    $("[data-t-fix]").textContent = tally.fix;
+    $("[data-t-pass]").textContent = tally.pass;
+  }
+  function updAgCount() {
+    var done = AGENTS.filter(function (a) { return agState[a.id] === "done"; }).length;
+    var run = AGENTS.filter(function (a) { return agState[a.id] === "run"; }).map(function (a) { return a.name; });
+    $("[data-t-ag]").textContent = done + " of " + AGENTS.length;
+    $("[data-ag-active]").textContent = done === AGENTS.length ? "All done" : run.length ? run.length + " working" : "Starting";
+  }
+  function typeInto(el, text) {
+    if (!el) return;
+    clearInterval(el._tt);
+    if (REDUCED) { el.textContent = text; return; }
+    var i = 0; el.textContent = "";
+    el._tt = setInterval(function () { i += 2; el.textContent = text.slice(0, i); if (i >= text.length) clearInterval(el._tt); }, 16);
+  }
+  function setAgent(id, state, text) {
+    var row = $('[data-ag="' + id + '"]'); if (!row) return;
+    if (state && agState[id] !== state) {
+      agState[id] = state;
+      row.classList.remove("run", "done", "est");
+      row.classList.add(state === "est" ? "done" : state);
+      if (state === "est") { row.classList.add("est"); agState[id] = "done"; }
+      $(".ag-st", row).textContent = state === "run" ? "Working" : state === "est" ? "Estimated" : state === "done" ? "Done" : "Queued";
+      var cur = $('[data-cur="' + id + '"]');
+      if (cur) cur.classList.toggle("on", state === "run");
+      if (state !== "run") { clearInterval(thinkT[id]); park(id); }
+      updAgCount();
+    }
+    if (text != null) typeInto($("[data-ag-s]", row), text);
+  }
+  function think(id, lines) {
+    clearInterval(thinkT[id]); var k = 0;
+    setAgent(id, null, lines[0]);
+    thinkT[id] = setInterval(function () { if (agState[id] !== "run") return clearInterval(thinkT[id]); k = (k + 1) % lines.length; setAgent(id, null, lines[k]); }, 2600);
   }
   function stage(id, state, detail) {
-    var el = $('[data-stage="' + id + '"]'); if (!el) return;
-    el.classList.remove("run", "done", "skip");
-    if (state) el.classList.add(state === "est" ? "done" : state);
-    if (state === "est") el.classList.add("skip");
-    if (detail != null) $(".d", el).textContent = detail;
     stState[id] = state;
-    var done = 0; STAGES.forEach(function (s) { var v = stState[s.id]; done += v === "done" || v === "est" || v === "skip" ? 1 : v === "run" ? 0.4 : 0; });
+    var st = STAGES.filter(function (s) { return s.id === id; })[0]; if (!st) return;
+    var mine = STAGES.filter(function (s) { return s.agent === st.agent; });
+    var allDone = mine.every(function (s) { return stState[s.id] === "done" || stState[s.id] === "est"; });
+    var aState = state === "run" ? "run" : allDone ? (state === "est" ? "est" : "done") : "run";
+    setAgent(st.agent, aState, detail != null ? detail : null);
+    var done = 0; STAGES.forEach(function (s) { var v = stState[s.id]; done += v === "done" || v === "est" ? 1 : v === "run" ? 0.4 : 0; });
     var pct = Math.round(done / STAGES.length * 100);
     $("[data-s-bar]").style.width = pct + "%";
     $("[data-s-barwrap]").setAttribute("aria-valuenow", pct);
+    $("[data-s-pct]").textContent = pct + "% done";
   }
   function startTimer() {
-    var t0 = Date.now(), el = $("[data-s-time]");
+    t0Scan = Date.now(); var el = $("[data-s-time]");
     clearInterval(tickT);
-    tickT = setInterval(function () { var s = Math.floor((Date.now() - t0) / 1000); el.textContent = Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2) + " elapsed"; }, 500);
+    tickT = setInterval(function () { el.textContent = fmtT() + " elapsed"; }, 500);
   }
-  function setMiniScore(v, label) {
-    var ring = $("[data-s-ring]"), c = $(".val", ring);
-    var C = 326.7;
+  function setMiniScore(v) {
+    var ring = $("[data-s-ring]"), c = $(".val", ring), C = 326.7;
     c.style.strokeDashoffset = v == null ? C : C * (1 - v / 100);
     $("[data-s-score]").textContent = v == null ? "–" : v;
-    if (label) $("[data-s-score-label]").textContent = label;
   }
-  function addFeed(kind, title, text, chips) {
-    var list = $("[data-s-feed]");
-    var empty = $(".an-feed-empty", list); if (empty) empty.remove();
-    var d = doc.createElement("div");
-    d.className = "an-fi " + kind;
-    d.innerHTML = '<span class="dot">' + (kind === "pass" ? ICON_CHECK : kind === "fail" ? "!" : ICON_SPARK) + '</span><div><div class="t">' + esc(title) + "</div>" + (text ? '<div class="e">' + esc(text) + "</div>" : "") + (chips ? '<div class="chips">' + chips + "</div>" : "") + "</div>";
-    list.insertBefore(d, list.firstChild);
+  /* log line: agent tag, time, icon, text */
+  var curAgent = "reader";
+  function addFeed(kind, title, text, chips, agentId) {
+    var a = AG[agentId || curAgent] || AGENTS[0];
+    var list = $("[data-ag-log]");
+    var stick = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    var li = doc.createElement("li");
+    li.className = "ag-l " + kind;
+    li.style.setProperty("--c", a.c);
+    li.innerHTML = '<span class="tm">' + fmtT() + '</span><span class="who">' + esc(a.name) + '</span><span class="ic">' + (kind === "pass" ? ICON_CHECK : kind === "fail" ? "!" : kind === "info" ? ICON_SPARK : "›") + '</span><span class="tx"><b>' + esc(title) + "</b>" + (text ? '<em>' + esc(text) + "</em>" : "") + (chips ? '<span class="chips">' + chips + "</span>" : "") + "</span>";
+    list.appendChild(li);
     feedN++;
-    $("[data-s-count]").textContent = plural(feedN, "finding") + " · newest first";
-    while (list.children.length > 40) list.removeChild(list.lastChild);
+    $("[data-s-count]").textContent = plural(feedN, "line");
+    while (list.children.length > 80) list.removeChild(list.firstChild);
+    if (stick) list.scrollTop = list.scrollHeight;
   }
   function barrierChips(ids, lib, max) {
     return (ids || []).slice(0, max || 3).map(function (b) {
@@ -359,22 +423,96 @@
       return '<span class="chip b" title="' + esc(x ? tidy(x.description) : "") + '">' + esc(b + (x ? " " + tidy(x.name) : "")) + "</span>";
     }).join("");
   }
-  function fillFirstLook(r) {
-    var p = cleanPage(r.page);
+
+  /* the page canvas */
+  function paintPage(r) {
+    var p = cleanPage(r.page || {}), pdp = p.pageType === "PDP";
+    var url = (hostOf(r.url) || S.host) + (function () { try { var pa = new URL(r.url).pathname; return pa.length > 1 ? pa : ""; } catch (e) { return ""; } })();
+    $("[data-ag-url]").textContent = url;
     $("[data-s-host]").textContent = hostOf(r.url) || S.host;
-    $("[data-s-title]").textContent = p.heroHeadline || p.title || r.host;
-    var rows = [["Page", PAGE_TYPE[p.pageType] || "Page"], ["Title", p.title || "No title tag"], ["Main button", p.primaryCta || "None found"], ["Platform", p.platform || "Not detected"]];
-    $("[data-s-kv]").innerHTML = rows.map(function (x) { return "<dt>" + esc(x[0]) + "</dt><dd>" + esc(x[1]) + "</dd>"; }).join("");
+    var head = esc(clip2(p.heroHeadline || p.title || S.host, 70));
+    var cta = esc(clip2(p.primaryCta || "Shop now", 22));
+    var price = p.aov ? esc(money(p.aov, p.currency)) : "";
+    var stars = '<span class="st">★★★★★</span>';
+    var nav = '<div class="pg-nav" data-r="nav"><span class="logo">' + esc((hostOf(r.url) || S.host).split(".")[0]) + '</span><span class="links"><i></i><i></i><i></i><i></i></span><span class="icons"><i></i><i></i></span></div>';
+    var foot = '<div class="pg-foot" data-r="footer"><div><i></i><i></i><i></i></div><div><i></i><i></i><i></i></div><div><i></i><i></i></div><div class="nl"><i></i><span></span></div></div>';
+    var h;
+    if (pdp) {
+      h = nav + '<div class="pg-pdp"><div class="pg-img" data-r="img"><div class="thumbs"><i></i><i></i><i></i></div></div><div class="pg-info">' +
+        '<div class="pg-crumb"><i></i><i></i></div><div class="pg-title" data-r="title">' + head + '</div><div class="pg-rate" data-r="reviews">' + stars + '<i></i></div>' +
+        '<div class="pg-price" data-r="price">' + (price ? "<b>" + price + "</b>" : "<b class=\"sk\"></b>") + '<s></s></div><div class="pg-var" data-r="details"><i></i><i></i><i></i></div>' +
+        '<div class="pg-cta" data-r="cta">' + cta + '</div><div class="pg-trust" data-r="trust"><i></i><i></i><i></i></div></div></div>' +
+        '<div class="pg-sec" data-r="content"><i></i><i></i><i style="width:60%"></i></div>' + foot;
+    } else {
+      h = nav + '<div class="pg-hero" data-r="img"><div class="pg-hero-t"><div class="pg-title" data-r="title">' + head + '</div><div class="pg-cta" data-r="cta">' + cta + '</div></div></div>' +
+        '<div class="pg-strip" data-r="trust"><i></i><i></i><i></i><i></i></div><div class="pg-grid" data-r="price">' + [0, 1, 2, 3].map(function () { return '<div><span></span><i></i><i style="width:45%"></i></div>'; }).join("") + '</div>' +
+        '<div class="pg-rev" data-r="reviews">' + stars + '<i></i><i></i></div><div class="pg-sec" data-r="content"><i></i><i style="width:70%"></i></div>' + foot;
+    }
+    var pg = $("[data-ag-page]");
+    pg.className = "ag-page " + (pdp ? "is-pdp" : "is-home");
+    pg.innerHTML = h;
     var og = String(p.ogImage || "");
-    if (/^https:\/\//i.test(og)) setShot(og, true);
+    if (/^https:\/\//i.test(og)) {
+      var img = new Image(); img.alt = ""; img.onload = function () { var box = $('[data-ag-page] [data-r="img"]'); if (box) { box.style.backgroundImage = 'url("' + og.replace(/"/g, "%22") + '")'; box.classList.add("has-img"); } }; img.src = og;
+    }
   }
-  function setShot(src, isOg) {
-    var box = $("[data-s-shot]"); if (!box) return;
-    var img = new Image();
-    img.alt = isOg ? "Preview image from your page's tags" : "Your page on a phone";
-    img.onload = function () { box.innerHTML = ""; box.appendChild(img); };
-    img.src = src;
+  function regionRect(name) {
+    var fx = $("[data-ag-fx]"), el = $('[data-ag-page] [data-r="' + name + '"]');
+    if (!fx || !el) return null;
+    var a = fx.getBoundingClientRect(), b = el.getBoundingClientRect();
+    return { x: b.left - a.left, y: b.top - a.top, w: b.width, h: b.height, W: a.width, H: a.height };
   }
+  function moveCur(id, x, y) {
+    var c = $('[data-cur="' + id + '"]'); if (!c) return;
+    c.style.transform = "translate(" + Math.round(x) + "px," + Math.round(y) + "px)";
+  }
+  function park(id) {
+    var fx = $("[data-ag-fx]"), a = AG[id]; if (!fx || !a) return;
+    var W = fx.clientWidth, H = fx.clientHeight;
+    moveCur(id, W * a.park[0] - 40, H * a.park[1] - 8);
+  }
+  function goTo(id, region, jitter) {
+    var r = regionRect(region); if (!r) return null;
+    var j = jitter == null ? 0.5 : jitter;
+    moveCur(id, r.x + r.w * (0.25 + 0.5 * Math.random() * j), r.y + Math.min(r.h * 0.6, 24 + Math.random() * Math.max(0, r.h - 30)));
+    return r;
+  }
+  function flash(region, kind, label, color) {
+    var r = regionRect(region), fx = $("[data-ag-fx]"); if (!r) return;
+    $$(".ag-box:not(.out)", fx).forEach(function (o) { o.classList.add("out"); setTimeout(function () { o.remove(); }, 450); });
+    var b = doc.createElement("div");
+    b.className = "ag-box " + (kind || "");
+    if (color) b.style.setProperty("--c", color);
+    b.style.cssText += ";left:" + (r.x - 3) + "px;top:" + (r.y - 3) + "px;width:" + (r.w + 6) + "px;height:" + (r.h + 6) + "px";
+    if (label) b.innerHTML = '<span' + (r.y < 26 ? ' class="in"' : "") + ">" + esc(label) + "</span>";
+    fx.appendChild(b);
+    setTimeout(function () { b.classList.add("out"); }, 1300);
+    setTimeout(function () { b.remove(); }, 1800);
+  }
+  /* one pin per region and kind: issues show a running count, tests show their numbers */
+  function pin(region, text, kind) {
+    var r = regionRect(region), fx = $("[data-ag-fx]"); if (!r) return;
+    kind = kind || "bad";
+    var key = region + ":" + kind, d = pinN[key];
+    var slot = { bad: 0, warn: 1, test: 2 }[kind] || 0;
+    if (!d) {
+      d = pinN[key] = doc.createElement("span");
+      d.className = "ag-pin " + kind;
+      d.style.left = Math.min(r.x + r.w - 10 - slot * 34, r.W - 30) + "px";
+      d.style.top = Math.max(2, r.y - 9) + "px";
+      d._n = 0; d._t = [];
+      fx.appendChild(d);
+    } else { d.style.animation = "none"; void d.offsetWidth; d.style.animation = ""; }
+    d._n++;
+    if (kind === "test") { d._t.push(text); d.textContent = "T" + d._t.join(","); }
+    else d.textContent = kind === "warn" ? text : "!" + (d._n > 1 ? " " + d._n : "");
+  }
+  function sweep(on, color) {
+    var s = $("[data-ag-sweep]"); if (!s) return;
+    if (color) s.style.setProperty("--c", color);
+    s.classList.toggle("on", !!on);
+  }
+  win.addEventListener("resize", function () { if (doc.body.getAttribute("data-an-view") === "scan") AGENTS.forEach(function (a) { if (agState[a.id] !== "run") park(a.id); }); });
 
   function runPsi(url) {
     var skipP = new Promise(function (res) { S.psiSkip = function () { res(null); }; });
@@ -431,141 +569,215 @@
     S.running = true; S.psi = null; S.comps = []; S.report = null; S.saved = false; S.saveState = ""; feedN = 0;
     show("scan");
     buildStages();
-    $("[data-s-feed]").innerHTML = '<div class="an-feed-empty">Findings land here as each check finishes.</div>';
-    $("[data-s-count]").textContent = "Newest first";
     $("[data-s-done]").hidden = true;
     $("[data-s-status]").textContent = "Scanning"; $("[data-s-status]").classList.add("live");
+    $("[data-s-verb]").textContent = "Reading"; $("[data-ag-canvas]").classList.remove("is-done"); $(".ag-livepill").lastChild.textContent = "Live";
     $("[data-s-host]").textContent = S.host;
-    $("[data-s-title]").textContent = "Opening your page…";
-    $("[data-s-kv]").innerHTML = "";
-    setMiniScore(null, "Scoring as checks finish");
+    $("[data-t-bar]").textContent = "0";
+    setMiniScore(null);
     startTimer();
+    await sleep(60);
+    AGENTS.forEach(function (a) { park(a.id); });
 
-    /* 1. open */
-    stage("open", "run", S.host);
+    /* 1. Reader opens the page */
+    curAgent = "reader";
+    stage("open", "run", "Opening " + S.host);
+    addFeed("act", "Opening " + S.host, "", "");
     var r;
     try { r = await S.scanP; } catch (e) { showError(e); return; }
     var det = r.page || {};
     var want = S.inputs;
     if ((want.category && want.category !== det.category) || (want.aovBand && want.aovBand !== det.aovBand)) {
-      stage("open", "run", "Updating the scan for your answers");
+      setAgent("reader", null, "Re-reading the page with your answers");
       try { r = await api("/scan", { url: S.url, category: want.category || undefined, aovBand: want.aovBand || undefined, goal: want.goal }, { timeout: 45000 }); }
       catch (e) { /* keep the first read */ }
     }
     S.scan = r;
     var lib = r.library || { signals: {}, barriers: {}, rootCauses: {} };
-    await sleep(500);
+    var p = r.page || {};
+    paintPage(r);
+    await sleep(350);
     stage("open", "done", (hostOf(r.url) || S.host) + (r.lite && r.lite.ttfbMs != null ? " answered in " + r.lite.ttfbMs + "ms" : " answered"));
+    addFeed("act", "Page opened", r.lite && r.lite.ttfbMs != null ? "Server answered in " + r.lite.ttfbMs + "ms, " + (r.lite.htmlKb || "?") + " KB of HTML" : "", "");
 
+    /* Speed and Market start now and work in parallel */
     var psiP = runPsi(r.url);
     var compP = runComps(r);
+    curAgent = "speed";
+    stage("speed", "run");
+    think("speed", ["Loading your page on a mid-range phone", "Timing the largest image and headline", "Counting scripts that block taps", "Waiting for Google PageSpeed"]);
+    goTo("speed", "img");
+    addFeed("act", "Started Google PageSpeed on mobile", "Runs in the background while the others work", "", "speed");
+    var nComp = (S.inputs.competitors || []).length;
+    stage("compare", "run");
+    think("market", nComp ? ["Opening " + S.inputs.competitors.map(hostOf).join(" and "), "Reading their pages with the same checks", "Lining up their scores with yours"] : ["Finding the benchmark for " + (p.category || "your category"), "Matching your price band"]);
+    addFeed("act", nComp ? "Reading " + plural(nComp, "competitor") + " in parallel" : "Looking up your category benchmark", "", "", "market");
 
-    /* 2. structure */
-    stage("structure", "run");
-    fillFirstLook(r);
-    await sleep(1000);
-    var p = r.page || {};
+    /* 2. Reader maps the structure */
+    curAgent = "reader";
+    stage("structure", "run", "Mapping header, product and footer");
+    var walk = [["nav", "Header and menu"], ["title", (p.h1 && p.h1.length) ? plural(p.h1.length, "H1 heading") : "No H1 heading"], ["img", plural((p.images && p.images.total) || 0, "image")], ["cta", "Main button: " + (p.primaryCta || "none found")], ["footer", "Footer"]];
+    for (var w = 0; w < walk.length; w++) {
+      goTo("reader", walk[w][0]); await sleep(330);
+      flash(walk[w][0], "map", walk[w][1], AG.reader.c); await sleep(260);
+    }
     stage("structure", "done", [PAGE_TYPE[p.pageType] || "Page", plural(p.words || 0, "word"), plural((p.images && p.images.total) || 0, "image")].join(" · "));
-    if (p.rendered === "client") addFeed("info", "Your page builds most of its content with JavaScript", "We read what's in the page's HTML. Checks that need the rendered page are left out of the score, never counted as failures.");
+    addFeed("act", "Mapped the page", [PAGE_TYPE[p.pageType] || "Page", plural(p.words || 0, "word"), plural((p.images && p.images.total) || 0, "image"), p.platform].filter(Boolean).join(" · "), "");
+    if (p.rendered === "client") addFeed("info", "This page builds most of its content with JavaScript", "We read what's in the HTML. Checks that need the rendered page are left out of the score, never counted as failures.");
 
-    /* 3. business */
-    stage("business", "run");
-    await sleep(900);
-    stage("business", "done", [p.category || "Category not detected", p.aovBand ? bandLabel(p.aovBand) : "", p.platform].filter(Boolean).join(" · "));
+    /* 3. Reader reads the business */
+    stage("business", "run", "Working out what you sell");
+    goTo("reader", "price"); await sleep(420);
+    var bizLine = [p.category || "Category not detected", p.aovBand ? bandLabel(p.aovBand) : p.aov ? money(p.aov, p.currency) : "", p.platform].filter(Boolean).join(" · ");
+    flash("price", "map", p.aov ? "Typical price " + money(p.aov, p.currency) : "Prices", AG.reader.c);
+    await sleep(500);
+    stage("business", "done", bizLine);
+    addFeed("act", "Read the business", bizLine, "");
 
-    /* 4. signals */
+    /* 4. Conversion agent runs every check on the page */
+    curAgent = "conv";
     var checks = (r.checks || []).filter(function (c) { return !/^SIG-(MOB|A11Y)/.test(c.signal); });
-    stage("signals", "run", "0 of " + checks.length);
-    var tw = 0, fw = 0;
+    stage("signals", "run", "0 of " + checks.length + " checks");
+    addFeed("act", "Running " + plural(checks.length, "conversion check"), "Each one comes from the TrooCRO signal library", "");
     for (var i = 0; i < checks.length; i++) {
-      var c = checks[i], s = lib.signals[c.signal] || {};
-      var w = Math.max(1, Math.min(3, s.severity || 2));
-      tw += w; if (c.status === "fail") fw += w;
-      if (c.status === "fail") addFeed("fail", tidy(s.name) || c.key, c.evidence, barrierChips(s.barriers, lib, 2));
-      else addFeed("pass", c.evidence, "", "");
-      setMiniScore(Math.round(100 * (1 - fw / tw)), "Conversion, so far");
-      stage("signals", "run", (i + 1) + " of " + checks.length);
-      await sleep(checks.length > 16 ? 330 : 430);
+      var c = checks[i], s = lib.signals[c.signal] || {}, reg = regionFor(c.key);
+      var short = SHORT[c.key] || tidy(s.name) || c.key;
+      setAgent("conv", null, "Checking " + (i + 1) + " of " + checks.length + ": " + (tidy(s.name) || short));
+      goTo("conv", reg);
+      await sleep(REDUCED ? 120 : 300);
+      if (c.status === "fail") {
+        tally.fix++;
+        flash(reg, "bad", short);
+        pin(reg, "!", "bad");
+        addFeed("fail", short, c.evidence, barrierChips(s.barriers, lib, 2));
+      } else {
+        tally.pass++;
+        flash(reg, "ok", clip2(c.evidence, 46));
+        addFeed("pass", clip2(c.evidence, 90), "", "");
+      }
+      updTally();
+      await sleep(checks.length > 16 ? 230 : 320);
     }
     var conv = r.conversion || {};
-    stage("signals", "done", checks.length ? conv.passed + " passed · " + conv.failed + " to fix" : "Not enough page content to check");
+    stage("signals", "done", checks.length ? conv.passed + " passed, " + conv.failed + " to fix" : "Not enough page content to check");
 
-    /* 5. barriers */
-    stage("barriers", "run");
-    await sleep(800);
-    var bHit = {};
-    checks.forEach(function (c) { if (c.status !== "fail") return; var s = lib.signals[c.signal] || {}; (s.barriers || []).forEach(function (b) { bHit[b] = (bHit[b] || 0) + 1; }); });
+    /* 5. Barrier agent tags what stops buyers */
+    curAgent = "barrier";
+    stage("barriers", "run", "Matching failures to buyer barriers");
+    var bHit = {}, bReg = {};
+    checks.forEach(function (c) { if (c.status !== "fail") return; var s = lib.signals[c.signal] || {}; (s.barriers || []).forEach(function (b) { bHit[b] = (bHit[b] || 0) + 1; if (!bReg[b]) bReg[b] = regionFor(c.key); }); });
     var bIds = Object.keys(bHit).sort(function (a, b) { return bHit[b] - bHit[a]; });
-    stage("barriers", "done", bIds.length ? plural(bIds.length, "barrier") + ": " + bIds.slice(0, 3).map(function (b) { return b + (lib.barriers[b] ? " " + tidy(lib.barriers[b].name) : ""); }).join(", ") : "No barrier tags on the failed checks");
+    for (var bi = 0; bi < Math.min(bIds.length, 5); bi++) {
+      var bid = bIds[bi], bx = lib.barriers[bid];
+      setAgent("barrier", null, bid + (bx ? " " + tidy(bx.name) : "") + ": " + plural(bHit[bid], "issue"));
+      goTo("barrier", bReg[bid]); await sleep(300);
+      flash(bReg[bid], "bar", bid + (bx ? " " + tidy(bx.name) : ""), AG.barrier.c);
+      $("[data-t-bar]").textContent = String(bi + 1);
+      await sleep(360);
+    }
+    $("[data-t-bar]").textContent = String(bIds.length);
+    stage("barriers", "done", bIds.length ? plural(bIds.length, "barrier") + ": " + bIds.slice(0, 3).join(", ") : "No barrier tags on the failed checks");
+    addFeed(bIds.length ? "fail" : "pass", bIds.length ? plural(bIds.length, "buyer barrier") + " triggered" : "No buyer barriers triggered", bIds.slice(0, 4).map(function (b) { return b + (lib.barriers[b] ? " " + tidy(lib.barriers[b].name) : ""); }).join(", "), "");
 
-    /* 6. speed */
-    stage("speed", "run", "Google PageSpeed, mobile");
+    /* 6. Search & AI agent (runs while Speed keeps waiting) */
+    curAgent = "search";
+    stage("search", "run", "Reading robots.txt, sitemap and schema");
+    var ai = r.ai || {};
+    goTo("search", "nav"); await sleep(380);
+    flash("nav", "map", "Meta tags and schema", AG.search.c); await sleep(320);
+    (ai.checks || []).forEach(function (x) { if (!x.pass) addFeed("fail", x.label, x.detail || "", ""); });
+    var aiFails = (ai.checks || []).filter(function (x) { return !x.pass; });
+    if (aiFails.length) { goTo("search", "title"); await sleep(320); flash("title", "bad", aiFails[0].label); pin("nav", "AI", "warn"); }
+    await sleep(300);
+    stage("search", "done", "Search and AI " + (ai.readiness != null ? ai.readiness : "n/a") + "/100, agents " + (ai.agent && ai.agent.score != null ? ai.agent.score : "n/a") + "/100");
+    addFeed("act", "Search and AI readiness " + (ai.readiness != null ? ai.readiness + "/100" : "n/a"), (ai.checks || []).filter(function (x) { return x.pass; }).length + " of " + (ai.checks || []).length + " checks pass", "");
+
+    /* 7. Speed agent reports in */
+    curAgent = "speed";
     var skipTimer = setTimeout(function () {
-      var el = $('[data-stage="speed"] .d');
-      if (!el || stState.speed !== "run") return;
-      el.innerHTML = "Still measuring. <button class=\"skipbtn\" type=\"button\" data-skip-psi>Use an estimate instead</button>";
+      if (agState.speed !== "run") return;
+      var row = $('[data-ag="speed"] [data-ag-s]'); if (!row) return;
+      clearInterval(thinkT.speed); clearInterval(row._tt);
+      row.innerHTML = "Still measuring. <button class=\"skipbtn\" type=\"button\" data-skip-psi>Use an estimate</button>";
       var b = $("[data-skip-psi]"); if (b) b.addEventListener("click", function () { if (S.psiSkip) S.psiSkip(); });
-    }, 15000);
+    }, 12000);
+    sweep(true, AG.speed.c);
     var psi = await psiP;
     clearTimeout(skipTimer);
+    sweep(false);
     S.psi = psi;
     if (psi) {
       (psi.findings || []).filter(function (f) { return f.area === "speed"; }).forEach(function (f) { var s = lib.signals[f.signal] || {}; addFeed("fail", tidy(s.name) || "Speed", f.evidence, ""); });
       var m = psi.metrics || {};
-      stage("speed", "done", "Performance " + psi.scores.performance + "/100" + (m.lcp ? " · largest content at " + (m.lcp / 1000).toFixed(1) + "s" : ""));
+      flash("img", psi.scores.performance >= 70 ? "ok" : "bad", "Performance " + psi.scores.performance + "/100");
+      stage("speed", "done", "Performance " + psi.scores.performance + "/100" + (m.lcp ? ", largest content at " + (m.lcp / 1000).toFixed(1) + "s" : ""));
     } else {
       var lt = r.lite || {};
-      addFeed("info", "Speed estimated from your page's code", "Google PageSpeed was busy, so we estimated speed from server response, page weight and scripts: " + (lt.speedEstimate != null ? lt.speedEstimate + "/100." : "no estimate."));
-      stage("speed", "est", "Estimated from your page's code: " + (lt.speedEstimate != null ? lt.speedEstimate + "/100" : "n/a"));
+      flash("img", "map", "Speed estimate " + (lt.speedEstimate != null ? lt.speedEstimate + "/100" : "n/a"), AG.speed.c);
+      addFeed("info", "Speed estimated from the page's code", "Google PageSpeed was busy, so we estimated from server response, page weight and scripts: " + (lt.speedEstimate != null ? lt.speedEstimate + "/100." : "no estimate."));
+      stage("speed", "est", "Estimated from the page's code: " + (lt.speedEstimate != null ? lt.speedEstimate + "/100" : "n/a"));
     }
 
-    /* 7. search and AI */
-    stage("search", "run");
-    await sleep(800);
-    var ai = r.ai || {};
-    (ai.checks || []).filter(function (x) { return !x.pass; }).slice(0, 3).forEach(function (x) { addFeed("fail", x.label, x.detail || "", ""); });
-    stage("search", "done", "Readiness " + (ai.readiness != null ? ai.readiness : "n/a") + "/100 · agent readiness " + (ai.agent && ai.agent.score != null ? ai.agent.score : "n/a") + "/100");
-
-    /* 8. accessibility */
-    stage("a11y", "run");
-    await sleep(700);
+    /* 8. Access agent */
+    curAgent = "a11y";
+    stage("a11y", "run", "Checking alt text, labels and contrast");
+    goTo("a11y", "img"); await sleep(380);
     if (psi && psi.scores.accessibility != null) {
-      (psi.findings || []).filter(function (f) { return f.area === "accessibility"; }).slice(0, 2).forEach(function (f) { var s = lib.signals[f.signal] || {}; addFeed("fail", tidy(s.name) || "Accessibility", f.evidence, ""); });
+      (psi.findings || []).filter(function (f) { return f.area === "accessibility"; }).slice(0, 3).forEach(function (f) { var s = lib.signals[f.signal] || {}; addFeed("fail", tidy(s.name) || "Accessibility", f.evidence, ""); });
+      flash("img", psi.scores.accessibility >= 85 ? "ok" : "bad", "Accessibility " + psi.scores.accessibility + "/100");
+      await sleep(400);
       stage("a11y", "done", "Accessibility " + psi.scores.accessibility + "/100 (Google Lighthouse)");
     } else {
       var lt2 = r.lite || {};
-      if (lt2.a11yIssues && lt2.a11yIssues.length) addFeed("fail", "Accessibility gaps in the page's code", lt2.a11yIssues.slice(0, 3).join(", ") + ".", "");
-      stage("a11y", "est", "Estimated from your page's code: " + (lt2.a11yEstimate != null ? lt2.a11yEstimate + "/100" : "n/a"));
+      if (lt2.a11yIssues && lt2.a11yIssues.length) { flash("img", "bad", lt2.a11yIssues[0]); addFeed("fail", "Accessibility gaps in the page's code", lt2.a11yIssues.slice(0, 3).join(", ") + ".", ""); }
+      else flash("img", "ok", "No obvious gaps in the code");
+      goTo("a11y", "cta"); await sleep(400);
+      stage("a11y", "est", "Estimated from the page's code: " + (lt2.a11yEstimate != null ? lt2.a11yEstimate + "/100" : "n/a"));
     }
 
-    /* 9. compare */
-    var nComp = (S.inputs.competitors || []).length;
-    stage("compare", "run", nComp ? "Reading " + plural(nComp, "competitor") : "Matching your category benchmark");
+    /* 9. Market agent reports in */
+    curAgent = "market";
+    goTo("market", "price");
     var comps = await compP;
     S.comps = comps;
-    await sleep(600);
+    await sleep(400);
     var okComps = comps.filter(function (c) { return !c.error; });
-    var cDetail = nComp ? (okComps.length ? "Compared with " + okComps.map(function (c) { return c.host; }).join(" and ") : "We couldn't read the competitor pages") : "";
+    okComps.forEach(function (c) { addFeed("act", "Read " + c.host, "Search and AI " + (c.ai && c.ai.readiness != null ? c.ai.readiness : "n/a") + ", speed estimate " + (c.lite && c.lite.speedEstimate != null ? c.lite.speedEstimate : "n/a"), ""); });
+    comps.filter(function (c) { return c.error; }).forEach(function (c) { addFeed("info", "Couldn't read " + c.host, c.error, ""); });
     var bm = r.benchmark;
-    cDetail = [cDetail, bm ? "Benchmark: " + bm.category + ", " + bandLabel(bm.band) : "No benchmark for this category and price band"].filter(Boolean).join(" · ");
+    flash("price", "map", bm ? "Benchmark: store conversion " + bm.cvr + "%" : "No benchmark for this band", AG.market.c);
+    var cDetail = [nComp ? (okComps.length ? "Compared with " + okComps.map(function (c) { return c.host; }).join(" and ") : "Couldn't read the competitor pages") : "", bm ? "Benchmark: " + bm.category + ", " + bandLabel(bm.band) : "No benchmark for this category and band"].filter(Boolean).join(" · ");
+    await sleep(500);
     stage("compare", "done", cDetail);
 
-    /* 10. plan */
-    stage("plan", "run");
+    /* 10. Planner */
+    curAgent = "plan";
+    stage("plan", "run", "Ranking fixes by impact and effort");
     S.report = buildReport(r, psi, comps);
     var C = compute(S.report);
     var T = testsOf(S.report, findingsOf(S.report));
-    await sleep(900);
+    for (var ti = 0; ti < T.length; ti++) {
+      var reg2 = regionFor(T[ti].f.key);
+      setAgent("plan", null, "Test " + (ti + 1) + ": " + clip2(T[ti].title, 60));
+      goTo("plan", reg2); await sleep(380);
+      flash(reg2, "plan", "Test " + (ti + 1), AG.plan.c);
+      pin(reg2, String(ti + 1), "test");
+      addFeed("act", "Test " + (ti + 1) + ": " + clip2(T[ti].title, 90), T[ti].where || "", "");
+      await sleep(320);
+    }
     stage("plan", "done", T.length ? plural(T.length, "test") + " planned, starting " + fmtDate(nextMonday(new Date())) : "Nothing urgent to test");
     clearInterval(tickT);
-    setMiniScore(C.total, "Website score");
     $("[data-s-status]").textContent = "Done"; $("[data-s-status]").classList.remove("live");
+    $("[data-s-verb]").textContent = "Finished reading"; $("[data-ag-canvas]").classList.add("is-done"); $(".ag-livepill").lastChild.textContent = "Done";
+    $("[data-s-verdict]").textContent = C.verdict;
     $("[data-s-done]").hidden = false;
+    setTimeout(function () { setMiniScore(C.total); }, 60);
+    addFeed("pass", "Report ready", "Website score " + (C.total != null ? C.total + "/100" : "n/a"), "", "plan");
     S.running = false;
     saveReport();
     var openBtn = $("[data-s-open]");
     if (openBtn) openBtn.onclick = function () { openReport(S.report, { mode: "live" }); };
-    await sleep(1600);
+    await sleep(2200);
     if (doc.body.getAttribute("data-an-view") === "scan") openReport(S.report, { mode: "live" });
   }
 

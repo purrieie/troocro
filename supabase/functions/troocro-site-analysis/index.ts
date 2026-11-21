@@ -71,7 +71,7 @@ async function fetchText(u: URL | string, opts: { timeout?: number; maxBytes?: n
   for (let i = 0; i < 6; i++) {
     res = await fetch(current.href, {
       redirect: "manual",
-      headers: { "User-Agent": UA, "Accept": opts.accept ?? "text/html,application/xhtml+xml,*/*;q=0.8", "Accept-Language": "en-IN,en;q=0.9" },
+      headers: { "User-Agent": UA, "Accept": opts.accept ?? "text/html,application/xhtml+xml,*/*;q=0.8", "Accept-Language": "en-IN,en;q=0.9", "Cookie": "localization=IN; cart_currency=INR" },
       signal: AbortSignal.timeout(timeout),
     });
     const loc = res.headers.get("location");
@@ -246,6 +246,20 @@ const TOOLS: Array<[string, string, RegExp]> = [
   ["Kommunicate", "support", /kommunicate/],
   ["Haptik", "support", /haptik/],
   ["Verloop", "support", /verloop/],
+  ["Bik", "support", /bik-chat|cdn\.bik\.ai|bik\.ai\/|\bbik[-_ ]?(widget|chat)/i],
+  ["LimeChat", "support", /limechat/i],
+  ["Gupshup", "support", /gupshup/i],
+  ["Yellow.ai", "support", /yellow\.ai|ymchat|yellowmessenger/i],
+  ["BotPenguin", "support", /botpenguin/i],
+  ["Spur", "support", /spurnow|spur-chat/i],
+  ["DelightChat", "support", /delightchat/i],
+  ["Drift", "support", /js\.driftt\.com|drift\.com\/(include|core)/i],
+  ["HubSpot chat", "support", /js\.usemessages\.com/i],
+  ["Zoho SalesIQ", "support", /salesiq\.zoho/i],
+  ["LiveChat", "support", /livechatinc\.com/i],
+  ["Shopify Inbox", "support", /shopify-chat|inbox\.shopify\.com|shopifychat/i],
+  ["Kapture CX", "support", /kapturecrm|kapture\.cx/i],
+  ["Chat or AI assistant", "support", /(id|class)=["'][^"']*\b(ai-chat|chat-widget|chatbot|chat-bot|live-chat|chat-launcher|chat-bubble|ask-ai|ai-assistant|chat-assistant)\b[^"']*["']|>\s*(ask ai|ask our ai|chat with us|chat with an expert|chat with our experts?|live chat|chat now|ask an expert|talk to an expert)\s*</i],
 ];
 const ESSENTIALS: Array<[string, string, string[]]> = [
   ["analytics", "Analytics", ["analytics"]],
@@ -311,6 +325,7 @@ function analyze(html: string, finalUrl: URL, extras: { robots: any; llms: any; 
   let aggRating: any = null;
   let hasPostalAddress = false;
   const ldPrices: number[] = [];
+  const ldOffers: Array<{ price: number; cur: string }> = [];
   for (const m of raw.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     try {
       const data = JSON.parse(m[1].trim());
@@ -325,7 +340,10 @@ function analyze(html: string, finalUrl: URL, extras: { robots: any; llms: any; 
         if (String(t).includes("PostalAddress") || o.streetAddress) hasPostalAddress = true;
         if (o.offers) {
           const offs = Array.isArray(o.offers) ? o.offers : [o.offers];
-          for (const of of offs) { const p = parseFloat(of && (of.price || of.lowPrice)); if (p > 0 && (!of.priceCurrency || of.priceCurrency === "INR")) ldPrices.push(p); }
+          for (const of of offs) {
+            const p = parseFloat(of && (of.price || of.lowPrice));
+            if (p > 0) { ldPrices.push(p); ldOffers.push({ price: p, cur: String((of && of.priceCurrency) || "").toUpperCase() }); }
+          }
         }
         for (const k of Object.keys(o)) if (k !== "aggregateRating" && typeof o[k] === "object") walk(o[k]);
       };
@@ -487,20 +505,27 @@ function analyze(html: string, finalUrl: URL, extras: { robots: any; llms: any; 
     if (prices.length >= 40) break;
   }
   const hasUsd = /\$\s?\d{1,5}(\.\d{2})?/.test(bodyText) && !prices.length;
-  let currency = prices.length || /₹|\binr\b/i.test(bodyText) ? "INR" : hasUsd ? "USD" : "unknown";
+  // The store's own currency wins: Shopify's active currency, then price meta tags, then JSON-LD offers.
+  const shopCur = (raw.match(/Shopify\.currency\s*=\s*\{\s*"active"\s*:\s*"([A-Z]{3})"/) || [])[1] || "";
+  const metaCur = String(metas["og:price:currency"] || metas["product:price:currency"] || "").toUpperCase();
+  const ldCur = (ldOffers.find((o) => /^[A-Z]{3}$/.test(o.cur)) || { cur: "" }).cur;
+  let currency = shopCur || (/^[A-Z]{3}$/.test(metaCur) ? metaCur : "") || ldCur;
+  if (!currency) currency = prices.length || /₹|\binr\b/i.test(bodyText) ? "INR" : /£\s?\d/.test(bodyText) ? "GBP" : /€\s?\d/.test(bodyText) ? "EUR" : hasUsd ? "USD" : "unknown";
+  const storeCountry = (raw.match(/Shopify\.country\s*=\s*"([A-Z]{2})"/) || [])[1] || "";
   let aov: number | null = null;
-  if (extras.product && typeof extras.product.price === "number") aov = extras.product.price / 100;
-  else if (ldPrices.length && pageType === "PDP") aov = ldPrices.reduce((a, b) => a + b, 0) / ldPrices.length;
-  else if (prices.length) {
+  const ldSame = ldOffers.filter((o) => !o.cur || o.cur === currency).map((o) => o.price);
+  if (extras.product && typeof extras.product.price === "number") aov = extras.product.price / 100; // Shopify sends the active currency in minor units
+  else if (ldSame.length && pageType === "PDP") aov = ldSame.reduce((a, b) => a + b, 0) / ldSame.length;
+  else if (prices.length && currency === "INR") {
     const s = prices.slice().sort((a, b) => a - b);
     const trim = s.length >= 10 ? s.slice(Math.floor(s.length * 0.1), Math.ceil(s.length * 0.9)) : s;
     aov = trim.reduce((a, b) => a + b, 0) / trim.length;
   }
-  if (extras.product && typeof extras.product.price === "number") currency = currency === "unknown" ? "INR" : currency;
   let aovBand = currency === "INR" ? bandFor(aov) : null;
   const bandInputs = ["< ₹500", "₹500–₹2,000", "₹2,000–₹5,000", "₹5,000+"];
   if (opts && bandInputs.includes(opts.aovBand)) aovBand = opts.aovBand;
-  const india = currency === "INR" || /\.in$/.test(finalUrl.hostname) || /\+91|india/i.test(footerText);
+  // India-only checks (COD, pincode) run when the store sells in rupees, or when we can't tell and the site looks Indian.
+  const india = currency === "INR" || (currency === "unknown" && (/\.in$/.test(finalUrl.hostname) || /\+91|india/i.test(footerText)));
 
   // shared text probes
   const has = (re: RegExp, s = lower) => re.test(s);
@@ -591,7 +616,7 @@ function analyze(html: string, finalUrl: URL, extras: { robots: any; llms: any; 
   }
   // Trust and support (all pages)
   ck("contact", "SIG-ALL-F-CONTACTACCESSWEAK-01", contactPresent, "We couldn't find a contact page, phone number, email or WhatsApp link.", "Contact details are reachable.");
-  ck("live_chat", "SIG-ALL-F-LIVECHATABSENT-01", chatPresent, "We couldn't find WhatsApp or live chat for last-minute questions.", "WhatsApp or live chat is available (" + tools.filter((t) => t.category === "support").map((t) => t.name).slice(0, 2).join(", ") + ").");
+  ck("live_chat", "SIG-ALL-F-LIVECHATABSENT-01", chatPresent, "We couldn't find WhatsApp, live chat or a chat assistant for last-minute questions.", "Shoppers can ask questions through chat (" + tools.filter((t) => t.category === "support").map((t) => t.name).slice(0, 2).join(", ") + ").");
   ck("policies", "SIG-ALL-F-PRIVACYPOLICYACCESSWEAK-01", privacyLink && refundLink,
     !privacyLink && !refundLink ? "We couldn't find a privacy or refund policy link." : !privacyLink ? "We couldn't find a privacy policy link." : "We couldn't find a refund, return or shipping policy link.",
     "Privacy and refund policies are linked.");
@@ -718,7 +743,7 @@ function analyze(html: string, finalUrl: URL, extras: { robots: any; llms: any; 
       rendered: clientRendered ? "client" : "server",
       title, description, lang, canonical, platform, pageType, category, categoryScores: Object.fromEntries(sortedCats.slice(0, 4)),
       h1: h1s.slice(0, 3), h2: h2s.slice(0, 8), heroHeadline, heroCtas: heroCtas.slice(0, 6), ctas: pageCtas.slice(0, 10), primaryCta: primary,
-      ogImage: metas["og:image"] || "", themeColor: metas["theme-color"] || "", currency, aov: aov ? Math.round(aov) : null, aovBand, india,
+      ogImage: metas["og:image"] || "", themeColor: metas["theme-color"] || "", currency, storeCountry, aov: aov ? Math.round(aov) : null, aovBand, india,
       prices: prices.length, words, images: { total: imgs.length, missingAlt: imgsNoAlt }, forms: forms.length, links: links.length,
       rating: aggRating, hasReviews, trustHits,
     },

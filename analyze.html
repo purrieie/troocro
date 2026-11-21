@@ -170,83 +170,34 @@
     </div>
   </section>
 
-  <!-- QUICK QUESTIONS -->
-  <section data-panel="questions" hidden aria-labelledby="an-q-title">
-    <div class="wrap an-q">
-      <div class="an-card an-q-card">
-        <div class="an-q-top"><span class="eyebrow">A few quick questions</span><span class="an-tag live" data-q-host>Reading your page</span></div>
-        <h2 class="h2" id="an-q-title">Tell us what matters, and we'll shape the report around it.</h2>
-        <p class="an-sub">Your scan has already started. Answer what you can, or skip.</p>
-
-        <div class="an-field">
-          <h3 class="an-h4">What do you sell?</h3>
-          <p class="an-sub">This picks the category signals and the benchmark we compare you with.</p>
-          <label class="sr-only" for="q-category">Category</label>
-          <select class="an-select" id="q-category" data-q-category>
-            <option value="">Let TrooCRO detect it</option>
-            <option>Beauty &amp; Personal Care</option>
-            <option>Fashion &amp; Apparel</option>
-            <option>Jewellery &amp; Accessories</option>
-            <option>Health &amp; Wellness</option>
-            <option>Food &amp; Beverages</option>
-            <option>Home &amp; Living</option>
-            <option>Electronics &amp; Gadgets</option>
-            <option>Baby &amp; Kids</option>
-            <option>Pet Care</option>
-            <option>Sports &amp; Fitness</option>
-            <option>Games &amp; Toys</option>
-          </select>
-          <div class="an-detect" data-q-cat-detect></div>
-        </div>
-
-        <div class="an-field">
-          <h3 class="an-h4">Typical order value</h3>
-          <div class="an-opts" role="radiogroup" aria-label="Typical order value" data-q-aov>
-            <label class="an-opt"><input type="radio" name="aov" value="&lt; ₹500"><span>Under ₹500</span></label>
-            <label class="an-opt"><input type="radio" name="aov" value="₹500–₹2,000"><span>₹500 to ₹2,000</span></label>
-            <label class="an-opt"><input type="radio" name="aov" value="₹2,000–₹5,000"><span>₹2,000 to ₹5,000</span></label>
-            <label class="an-opt"><input type="radio" name="aov" value="₹5,000+"><span>Over ₹5,000</span></label>
+  <!-- QUICK QUESTIONS: one at a time -->
+  <section data-panel="questions" hidden aria-label="A few quick questions">
+    <div class="qz">
+      <div class="wrap qz-wrap">
+        <div class="qz-main">
+          <div class="qz-top">
+            <div class="qz-prog" data-qz-prog aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="an-label" data-qz-count>1 of 5</span>
           </div>
-          <div class="an-detect" data-q-aov-detect></div>
-        </div>
-
-        <div class="an-field">
-          <h3 class="an-h4">What matters most right now?</h3>
-          <div class="an-opts" role="radiogroup" aria-label="Main goal" data-q-goal>
-            <label class="an-opt"><input type="radio" name="goal" value="conversion" checked><span>More orders from the same traffic</span></label>
-            <label class="an-opt"><input type="radio" name="goal" value="aov"><span>Bigger baskets</span></label>
-            <label class="an-opt"><input type="radio" name="goal" value="ads"><span>Better return on ad spend</span></label>
-            <label class="an-opt"><input type="radio" name="goal" value="speed"><span>A faster store</span></label>
-            <label class="an-opt"><input type="radio" name="goal" value="ai"><span>Show up in AI answers</span></label>
+          <div class="qz-stage" data-qz-stage></div>
+          <div class="qz-nav">
+            <button class="qz-link" type="button" data-qz-back><svg width="13" height="13"><use href="#i-left"/></svg>Back</button>
+            <span class="qz-hint">Press a letter to answer, <kbd>Enter</kbd> to continue</span>
+            <button class="qz-link" type="button" data-qz-skip>Skip to my report<svg width="13" height="13"><use href="#i-arrow"/></svg></button>
           </div>
         </div>
-
-        <div class="an-field">
-          <h3 class="an-h4">Monthly visitors to this page</h3>
-          <p class="an-sub">Used to date your test plan. A rough guess is fine.</p>
-          <div class="an-opts" role="radiogroup" aria-label="Monthly visitors" data-q-visitors>
-            <label class="an-opt"><input type="radio" name="visitors" value="5000"><span>Under 10,000</span></label>
-            <label class="an-opt"><input type="radio" name="visitors" value="30000"><span>10,000 to 50,000</span></label>
-            <label class="an-opt"><input type="radio" name="visitors" value="120000"><span>50,000 to 2 lakh</span></label>
-            <label class="an-opt"><input type="radio" name="visitors" value="300000"><span>Over 2 lakh</span></label>
-            <label class="an-opt"><input type="radio" name="visitors" value="" checked><span>Not sure</span></label>
+        <aside class="qz-live" aria-live="polite">
+          <div class="qz-live-card">
+            <div class="qz-live-top"><span class="an-tag live" data-qz-status>Reading your page</span><span class="an-label" data-qz-time></span></div>
+            <div class="browser">
+              <div class="bbar"><i></i><i></i><i></i><span class="url" data-qz-url>yourstore.com</span></div>
+              <div class="bview" data-qz-shot><div class="wire"><i class="w1"></i><i class="w2"></i><i class="w3"></i><span class="wcta"></span></div><div class="shimmer"></div></div>
+            </div>
+            <div class="qz-live-title" data-qz-title>Opening your page…</div>
+            <ul class="qz-facts" data-qz-facts></ul>
+            <p class="an-note">Your scan is already running. Answer while it reads.</p>
           </div>
-        </div>
-
-        <div class="an-field">
-          <h3 class="an-h4">Who do shoppers compare you with? <span class="an-label">&nbsp;Optional</span></h3>
-          <p class="an-sub">Add up to two competitor sites. We'll read their homepages and show where they're ahead.</p>
-          <div class="an-inputs">
-            <label class="an-input"><span class="pfx">https://</span><span class="sr-only">Competitor 1</span><input type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="competitor.com" data-q-comp></label>
-            <label class="an-input"><span class="pfx">https://</span><span class="sr-only">Competitor 2</span><input type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="another.com" data-q-comp></label>
-          </div>
-          <div class="an-err" data-q-err role="alert"></div>
-        </div>
-
-        <div class="an-q-foot">
-          <p class="an-note">We only read public pages. Nothing is installed on your store.</p>
-          <div class="btn-row"><button class="btn btn-ghost" type="button" data-q-skip>Skip questions</button><button class="btn btn-primary" type="button" data-q-start>Start my analysis <svg width="14" height="14"><use href="#i-arrow"/></svg></button></div>
-        </div>
+        </aside>
       </div>
     </div>
   </section>

@@ -727,3 +727,13 @@ details[open] > summary .chev::before { transform: rotate(-135deg); top: 7px; }
 }
 @media (max-width: 600px) { .pg-pdp { grid-template-columns: 1fr; } .pg-img { height: 120px; } .pg-foot { display: none; } .ag-roster { grid-template-columns: repeat(4, minmax(0, 1fr)); } .ag-cur span { font-size: 9.5px; } }
 @media (prefers-reduced-motion: reduce) { .ag-cur, .ag-box, .ag-pin, .ag-l, .ag-sweep::before, .ag-a.run .ag-av i { animation: none !important; transition: none !important; } }
+
+/* real page under the agents */
+.ag-real { position: absolute; top: 0; left: 0; right: 70px; bottom: 0; overflow: hidden; background: #fff; opacity: 0; transition: opacity 0.5s; }
+.ag-real.on { opacity: 1; }
+.ag-frame { border: 0; transform-origin: 0 0; pointer-events: none; display: block; background: #fff; }
+.ag-page.hide { opacity: 0; transition: opacity 0.4s; }
+.ag-canvas.is-real .ag-view { background: #0D0D11; }
+.ag-canvas.is-real .ag-box { background: color-mix(in srgb, var(--c) 14%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); }
+.ag-canvas.is-real .ag-cur svg { filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
+@media (max-width: 900px) { .ag-real { right: 54px; } }

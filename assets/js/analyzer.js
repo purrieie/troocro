@@ -327,7 +327,9 @@
   function clip2(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1).replace(/\s+\S*$/, "") + "…" : s; }
 
   function buildStages() {
-    stState = {}; agState = {}; pinN = {}; tally = { fix: 0, pass: 0 };
+    stState = {}; agState = {}; pinN = {}; tally = { fix: 0, pass: 0 }; RV = null;
+    $$(".ag-real").forEach(function (x) { x.remove(); });
+    var cv = $(".ag-canvas"); if (cv) cv.classList.remove("is-real");
     Object.keys(thinkT).forEach(function (k) { clearInterval(thinkT[k]); }); thinkT = {};
     $("[data-ag-roster]").innerHTML = AGENTS.map(function (a) {
       return '<div class="ag-a" data-ag="' + a.id + '" style="--c:' + a.c + '"><span class="ag-av"><i></i><b>' + esc(a.name.charAt(0)) + '</b></span><div class="ag-a-b"><div class="ag-a-t"><b>' + esc(a.name) + '</b><span class="ag-st">Queued</span></div><div class="ag-a-r">' + esc(a.role) + '</div><div class="ag-a-s" data-ag-s></div></div></div>';
@@ -455,8 +457,120 @@
     if (/^https:\/\//i.test(og)) {
       var img = new Image(); img.alt = ""; img.onload = function () { var box = $('[data-ag-page] [data-r="img"]'); if (box) { box.style.backgroundImage = 'url("' + og.replace(/"/g, "%22") + '")'; box.classList.add("has-img"); } }; img.src = og;
     }
+    if (S.viewP) S.viewP.then(function (v) { if (v && v.html && S.running) mountReal(v, p); });
+  }
+
+  /* ---------- the real page: fetched without scripts and drawn in a sandboxed frame ---------- */
+  var RV = null; // { frame, doc, win, scale, els: {region: element} }
+  function fetchView(url) {
+    var base = String(CFG.pageView || "").replace(/\/+$/, "");
+    if (!base || !win.fetch) return Promise.resolve(null);
+    var ctl = win.AbortController ? new AbortController() : null, t = ctl ? setTimeout(function () { ctl.abort(); }, 15000) : 0;
+    return fetch(base + "?url=" + encodeURIComponent(url), { signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(t); return r.ok ? r.json() : null; })
+      .catch(function () { return null; });
+  }
+  function mountReal(v, p) {
+    var view = $(".ag-view"), pg = $("[data-ag-page]"); if (!view || !pg) return;
+    var W = pg.clientWidth || (view.clientWidth - 70), H = view.clientHeight;
+    var vw = W < 560 ? 390 : 1280, scale = W / vw;
+    var fr = doc.createElement("iframe");
+    fr.setAttribute("sandbox", "allow-same-origin");
+    fr.setAttribute("title", "Your page, as the agents see it");
+    fr.setAttribute("tabindex", "-1");
+    fr.className = "ag-frame";
+    fr.style.width = vw + "px"; fr.style.height = Math.ceil(H / scale) + "px"; fr.style.transform = "scale(" + scale + ")";
+    fr.srcdoc = v.html;
+    var holder = doc.createElement("div"); holder.className = "ag-real"; holder.appendChild(fr);
+    view.insertBefore(holder, pg);
+    var done = false;
+    function ready() {
+      if (done) return; done = true;
+      var d, w;
+      try { d = fr.contentDocument; w = fr.contentWindow; } catch (e) { holder.remove(); return; }
+      if (!d || !d.body) { holder.remove(); return; }
+      $$("img", d).forEach(function (im) {
+        var ds = im.getAttribute("data-src") || im.getAttribute("data-lazy-src") || im.getAttribute("data-original");
+        var dss = im.getAttribute("data-srcset");
+        if (ds && (!im.getAttribute("src") || /data:image|placeholder|blank/i.test(im.getAttribute("src")))) im.setAttribute("src", ds.replace(/\{width\}/g, "800"));
+        if (dss && !im.getAttribute("srcset")) im.setAttribute("srcset", dss.replace(/\{width\}/g, "800"));
+        im.removeAttribute("loading");
+      });
+      setTimeout(function () {
+        var text = (d.body.innerText || "").replace(/\s+/g, " ").length;
+        var els = findRegions(d, w);
+        if (text < 250 || (!els.title && !els.cta)) { holder.remove(); return; }
+        RV = { frame: fr, doc: d, win: w, scale: scale, els: els, H: H, pins: [] };
+        holder.classList.add("on"); pg.classList.add("hide");
+        $(".ag-canvas").classList.add("is-real");
+        addFeed("act", "Loaded your live page", "The agents now work on your real page, drawn without its scripts", "", "reader");
+      }, 700);
+    }
+    fr.addEventListener("load", ready);
+    setTimeout(ready, 6000);
+  }
+  function findRegions(d, w) {
+    var ATC = /add to (cart|bag|basket)|buy (it )?now|add to order|shop now|order now/i;
+    function ok(el, maxTop) {
+      if (!el || !el.getBoundingClientRect) return false;
+      var r = el.getBoundingClientRect(), cs = w.getComputedStyle(el);
+      if (r.width < 24 || r.height < 10 || cs.visibility === "hidden" || cs.display === "none" || +cs.opacity === 0) return false;
+      return maxTop == null || r.top + w.scrollY < maxTop;
+    }
+    function first(sel, test, maxTop) {
+      var L; try { L = d.querySelectorAll(sel); } catch (e) { return null; }
+      for (var i = 0; i < L.length && i < 400; i++) if (ok(L[i], maxTop) && (!test || test(L[i]))) return L[i];
+      return null;
+    }
+    function tx(el) { return (el.innerText || el.value || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim(); }
+    var R = {};
+    R.nav = first("header") || first("nav") || first("[class*=header]");
+    R.title = first("main h1, h1");
+    R.cta = first("button, input[type=submit], a", function (el) { var t = tx(el); return t.length < 40 && ATC.test(t); }, 2400) || first("form[action*='/cart/add'] [type=submit]") ||
+      first("a[class*=btn], a[class*=button], button", function (el) { var t = tx(el); return t.length > 2 && t.length < 30; }, 1200);
+    R.price = first("[class*=price]", function (el) { var t = tx(el); return /\d/.test(t) && t.length < 90; }, 1800);
+    R.reviews = first("[class*=rating], [class*=review], [class*=stars], [class*=jdgm], [class*=yotpo], [class*=loox], [class*=okendo], [class*=stamped]", null, 1800);
+    R.details = first("variant-radios, variant-selects, fieldset, select[name*=ption], [class*=variant], [class*=swatch], [class*=option]", null, 2000);
+    R.trust = first("[class*=trust], [class*=badge], [class*=usp], [class*=icon-with-text], [class*=guarantee], [class*=delivery], [class*=shipping]", function (el) { return tx(el).length < 300; }, 2600);
+    R.img = first("main img, img", function (el) { var r = el.getBoundingClientRect(); return r.width > 180 && r.height > 140; }, 1600);
+    R.content = first("[class*=description], .rte, [class*=accordion]", function (el) { return tx(el).length > 40; }) || first("main h2");
+    R.footer = first("footer") || first("[class*=footer]");
+    var fb = { price: "title", reviews: "title", details: "cta", trust: "cta", content: "img", img: "title", nav: "title", title: "cta" };
+    Object.keys(fb).forEach(function (k) { if (!R[k]) R[k] = R[fb[k]] || null; });
+    return R;
+  }
+  function realRect(name) {
+    if (!RV || !RV.els[name]) return null;
+    var b = RV.els[name].getBoundingClientRect(), s = RV.scale, fx = $("[data-ag-fx]");
+    var W = fx.clientWidth, H = fx.clientHeight;
+    var x = b.left * s, y = b.top * s, w = Math.min(b.width * s, W - 74 - Math.max(0, x)), h = Math.min(b.height * s, H * 0.8);
+    return { x: Math.max(0, x), y: y, w: Math.max(20, w), h: Math.max(14, h), W: W, H: H };
+  }
+  function scrollToRegion(name, cb) {
+    if (!RV || !RV.els[name]) { if (cb) cb(); return; }
+    var w = RV.win, viewH = RV.H / RV.scale, b = RV.els[name].getBoundingClientRect();
+    var from = w.scrollY, docTop = b.top + from;
+    var inView = b.top > 30 && b.top + Math.min(b.height, viewH * 0.5) < viewH - 30;
+    if (inView) { if (cb) cb(); return; }
+    var to = Math.max(0, docTop - viewH * 0.28), t0 = performance.now(), dur = REDUCED ? 0 : 280;
+    (function step(now) {
+      var k = dur ? Math.min(1, (now - t0) / dur) : 1, e = 1 - Math.pow(1 - k, 3);
+      w.scrollTo(0, from + (to - from) * e); placePins();
+      if (k < 1) win.requestAnimationFrame(step); else if (cb) cb();
+    })(t0);
+  }
+  function placePins() {
+    if (!RV) return;
+    RV.pins.forEach(function (pp) {
+      var r = realRect(pp.region); if (!r) return;
+      var slot = { bad: 0, warn: 1, test: 2 }[pp.kind] || 0;
+      pp.el.style.left = Math.min(r.x + r.w - 10 - slot * 34, r.W - 30) + "px";
+      pp.el.style.top = (r.y - 9) + "px";
+      pp.el.style.opacity = r.y < -10 || r.y > r.H - 10 ? "0" : "";
+    });
   }
   function regionRect(name) {
+    if (RV) return realRect(name);
     var fx = $("[data-ag-fx]"), el = $('[data-ag-page] [data-r="' + name + '"]');
     if (!fx || !el) return null;
     var a = fx.getBoundingClientRect(), b = el.getBoundingClientRect();
@@ -472,6 +586,10 @@
     moveCur(id, W * a.park[0] - 40, H * a.park[1] - 8);
   }
   function goTo(id, region, jitter) {
+    if (RV) { scrollToRegion(region, function () { goTo2(id, region, jitter); }); return true; }
+    return goTo2(id, region, jitter);
+  }
+  function goTo2(id, region, jitter) {
     var r = regionRect(region); if (!r) return null;
     var j = jitter == null ? 0.5 : jitter;
     moveCur(id, r.x + r.w * (0.25 + 0.5 * Math.random() * j), r.y + Math.min(r.h * 0.6, 24 + Math.random() * Math.max(0, r.h - 30)));
@@ -502,6 +620,7 @@
       d.style.top = Math.max(2, r.y - 9) + "px";
       d._n = 0; d._t = [];
       fx.appendChild(d);
+      if (RV) RV.pins.push({ el: d, region: region, kind: kind });
     } else { d.style.animation = "none"; void d.offsetWidth; d.style.animation = ""; }
     d._n++;
     if (kind === "test") { d._t.push(text); d.textContent = "T" + d._t.join(","); }
@@ -533,11 +652,11 @@
     return {
       url: c.url, host: c.host,
       page: { title: p.title, pageType: p.pageType, category: p.category, rendered: p.rendered, rating: p.rating, hasReviews: p.hasReviews, platform: p.platform, primaryCta: p.primaryCta },
-      conversion: c.conversion,
+      conversion: c.conversion, _v2: true,
       checks: (c.checks || []).map(function (k) { return { key: k.key, signal: k.signal, status: k.status, evidence: k.evidence }; }),
       ai: { readiness: c.ai && c.ai.readiness, agent: { score: c.ai && c.ai.agent && c.ai.agent.score }, llms: c.ai && c.ai.llms },
       stack: { score: c.stack && c.stack.score, tools: ((c.stack && c.stack.tools) || []).map(function (t) { return t.name; }) },
-      lite: { speedEstimate: c.lite && c.lite.speedEstimate, a11yEstimate: c.lite && c.lite.a11yEstimate },
+      lite: c.lite ? { speedEstimate: c.lite.speedEstimate, a11yEstimate: c.lite.a11yEstimate, ttfbMs: c.lite.ttfbMs, htmlKb: c.lite.htmlKb, scripts: c.lite.scripts, stylesheets: c.lite.stylesheets, thirdPartyHosts: c.lite.thirdPartyHosts, imagesNoDims: c.lite.imagesNoDims, inlineScripts: c.lite.inlineScripts } : {},
       library: c.library
     };
   }
@@ -545,7 +664,7 @@
     var list = S.inputs.competitors || [];
     return Promise.all(list.map(function (u) {
       return api("/scan", { url: u, role: "competitor", parent: r.slug, category: (r.page && r.page.category) || undefined }, { timeout: 45000 })
-        .then(compactComp)
+        .then(function (c) { rescore(c, (c.library || {}).signals); return compactComp(c); })
         .catch(function (e) { return { url: u, host: hostOf(u), error: e.message || "We couldn't read their page." }; });
     }));
   }
@@ -568,6 +687,7 @@
     if (S.running) return;
     S.running = true; S.psi = null; S.comps = []; S.report = null; S.saved = false; S.saveState = ""; feedN = 0;
     show("scan");
+    S.viewP = fetchView(S.url);
     buildStages();
     $("[data-s-done]").hidden = true;
     $("[data-s-status]").textContent = "Scanning"; $("[data-s-status]").classList.add("live");
@@ -594,6 +714,7 @@
     }
     S.scan = r;
     var lib = r.library || { signals: {}, barriers: {}, rootCauses: {} };
+    rescore(r, lib.signals);
     var p = r.page || {};
     paintPage(r);
     await sleep(350);
@@ -813,22 +934,69 @@
   }
 
   /* ---------------- scoring and planning ---------------- */
+  /* ---------------- stricter scoring (v2) ----------------
+     Table-stakes checks (viewport, price shown, contact...) earn nothing when they pass and cost a lot when they fail.
+     Checks we can only confirm by a keyword somewhere on the page get partial credit.
+     Severity is squared, so a missing star rating near the top costs far more than a missing FAQ. */
+  var HYGIENE = { viewport: 1, lang: 1, pdp_atc: 1, pdp_price: 1, contact: 1, policies: 1, search: 1 };
+  var WEAK = { pdp_trust: 0.5, pdp_guarantee: 0.5, pdp_faq: 0.5, pdp_bundle: 0.5, pdp_urgency: 0.6, address: 0.6, live_chat: 0.6, pdp_sticky: 0.6, pdp_cod: 0.6, founder_story: 0.6, newsletter: 0.6 };
+  function convScore(checks, signals, rendered) {
+    if (rendered === "client") return { score: null, passed: 0, failed: 0, applicable: 0 };
+    var got = 0, tot = 0, np = 0, nf = 0, hygFail = false, sev3Fail = false;
+    (checks || []).forEach(function (c) {
+      if (/^SIG-(MOB|A11Y)/.test(c.signal)) return;
+      var sv = Math.max(1, Math.min(3, ((signals || {})[c.signal] || {}).severity || 2)), w = sv * sv;
+      if (c.status === "fail") nf++; else np++;
+      if (HYGIENE[c.key]) { if (c.status === "fail") { tot += 12; hygFail = true; } return; }
+      tot += w;
+      if (c.status === "fail") { if (sv === 3) sev3Fail = true; } else got += w * (WEAK[c.key] || 1);
+    });
+    var sc = tot ? Math.round(100 * got / tot) : null;
+    if (sc != null && hygFail) sc = Math.min(sc, 60);
+    if (sc != null && sev3Fail) sc = Math.min(sc, 85);
+    return { score: sc, passed: np, failed: nf, applicable: np + nf, v: 2 };
+  }
+  function speedEst(lt) {
+    if (!lt || lt.scripts == null) return lt ? lt.speedEstimate : null;
+    var s = 100, t = lt.ttfbMs || 0, kb = lt.htmlKb || 0, sc = lt.scripts || 0, css = lt.stylesheets || 0, tp = lt.thirdPartyHosts || 0, im = lt.imagesNoDims || 0, inl = lt.inlineScripts || 0;
+    s -= t > 1200 ? 20 : t > 600 ? 12 : t > 300 ? 5 : 0;
+    s -= kb > 800 ? 20 : kb > 400 ? 14 : kb > 200 ? 7 : 0;
+    s -= sc > 40 ? 25 : sc > 25 ? 18 : sc > 15 ? 10 : 0;
+    s -= css > 20 ? 14 : css > 10 ? 8 : css > 6 ? 4 : 0;
+    s -= tp > 20 ? 15 : tp > 10 ? 8 : 0;
+    s -= im > 40 ? 10 : im > 15 ? 5 : 0;
+    s -= inl > 50 ? 6 : 0;
+    return Math.max(5, Math.min(90, s));
+  }
+  function rescore(x, signals) {
+    if (!x || x._v2) return x;
+    if (x.lite && x.lite.scripts != null) x.lite.speedEstimate = speedEst(x.lite);
+    if (x.checks && x.checks.length) x.conversion = convScore(x.checks, signals || (x.lib && x.lib.signals) || (x.library && x.library.signals) || {}, x.page && x.page.rendered);
+    (x.comps || []).forEach(function (c) { if (!c.error) rescore(c, signals || (x.lib && x.lib.signals)); });
+    x._v2 = true;
+    return x;
+  }
+
   function compute(R) {
     var areas = [];
+    rescore(R);
     var conv = R.conversion && R.conversion.score != null ? R.conversion.score : null;
     areas.push({ key: "conversion", name: "Conversion", w: 40, v: conv, src: conv == null ? "Not measured: content loads with JavaScript" : R.conversion.passed + " of " + R.conversion.applicable + " checks passed" });
     var ps = R.psi && R.psi.scores ? R.psi.scores : null;
-    if (ps && ps.performance != null) areas.push({ key: "speed", name: "Speed", w: 20, v: ps.performance, src: "Google PageSpeed, mobile" });
-    else areas.push({ key: "speed", name: "Speed", w: 20, v: R.lite ? R.lite.speedEstimate : null, est: true, src: "Estimated from your page's code" });
+    if (ps && ps.performance != null) areas.push({ key: "speed", name: "Speed", w: 25, v: ps.performance, src: "Google PageSpeed, mobile" });
+    else areas.push({ key: "speed", name: "Speed", w: 25, v: R.lite ? R.lite.speedEstimate : null, est: true, src: "Estimated from your page's code" });
     var aiChecks = (R.ai && R.ai.checks) || [];
-    areas.push({ key: "search", name: "Search & AI", w: 20, v: R.ai ? R.ai.readiness : null, src: aiChecks.filter(function (x) { return x.pass; }).length + " of " + aiChecks.length + " checks passed" });
+    areas.push({ key: "search", name: "Search & AI", w: 15, v: R.ai ? R.ai.readiness : null, src: aiChecks.filter(function (x) { return x.pass; }).length + " of " + aiChecks.length + " checks passed" });
     if (ps && ps.accessibility != null) areas.push({ key: "a11y", name: "Accessibility", w: 20, v: ps.accessibility, src: "Google Lighthouse" });
     else areas.push({ key: "a11y", name: "Accessibility", w: 20, v: R.lite ? R.lite.a11yEstimate : null, est: true, src: "Estimated from your page's code" });
     areas.push({ key: "agent", name: "Agent readiness", w: 0, v: R.ai && R.ai.agent ? R.ai.agent.score : null, ctx: true, src: "Shown, not scored" });
     areas.push({ key: "stack", name: "Growth stack", w: 0, v: R.stack ? R.stack.score : null, ctx: true, src: "Shown, not scored" });
     var tw = 0, tv = 0, est = false;
     areas.forEach(function (a) { if (a.w && a.v != null) { tw += a.w; tv += a.w * a.v; if (a.est) est = true; } });
-    var total = tw ? Math.round(tv / tw) : null;
+    var avg = tw ? tv / tw : null, low = null;
+    areas.forEach(function (a) { if (a.w && a.v != null && (low == null || a.v < low)) low = a.v; });
+    // weakest link: one badly broken area drags the whole score down
+    var total = avg == null ? null : Math.round(avg - 0.3 * Math.max(0, avg - low));
     var verdict = total == null ? "Not enough to score" : total >= 85 ? "Strong. Small gains left." : total >= 70 ? "Good, with clear room to grow." : total >= 50 ? "Fair. Real sales are slipping away." : "Needs work. Shoppers are hitting walls.";
     return { areas: areas, total: total, est: est, verdict: verdict };
   }
@@ -959,7 +1127,7 @@
     h += '<div class="rp-areas">' + C.areas.map(function (a) {
       return '<div class="rp-area' + (a.ctx ? " ctx" : "") + (a.v == null ? " na" : "") + '" title="' + esc(a.src) + '"><span class="nm">' + esc(a.name) + (a.est && a.v != null ? "<em>est.</em>" : "") + '</span><span class="bar"><i style="width:' + (a.v || 0) + "%;background:" + colorFor(a.v) + '"></i></span><b>' + (a.v == null ? "n/a" : a.v) + '</b><span class="w">' + (a.w ? a.w + "%" : "info") + "</span></div>";
     }).join("") + "</div>";
-    h += '<details class="rp-how"><summary>How the score works</summary><p>Conversion counts for 40%, speed 20%, search and AI 20% and accessibility 20%. An area we couldn’t measure is left out and the rest are re-weighted, never counted as zero. Agent readiness and growth stack are shown for context, not scored.' + (C.est ? " Speed and accessibility are estimated from your page’s code when Google PageSpeed isn’t available." : "") + "</p></details></div>";
+    h += '<details class="rp-how"><summary>How the score works</summary><p>Conversion counts for 40%, speed 25%, accessibility 20% and search and AI 15%. Your weakest area pulls the total down further, because one broken area costs sales on its own. Basics every store needs, like a price or a contact link, earn nothing when present and cost a lot when missing, and checks we can only confirm from a keyword get partial credit. An area we couldn’t measure is left out, never counted as zero. Agent readiness and growth stack are shown for context, not scored.' + (C.est ? " Speed and accessibility are estimated from your page’s code when Google PageSpeed isn’t available." : "") + "</p></details></div>";
     h += '<div class="rp-page"><div class="browser"><div class="bbar"><i></i><i></i><i></i><span class="url">' + esc(host + (path.length > 1 ? path : "")) + '</span></div><div class="bview' + (shot ? " phone" : "") + '">';
     if (shot) h += '<img class="full" src="' + esc(shot) + '" alt="Your page on a phone, as Google loaded it">';
     else {
@@ -1337,6 +1505,7 @@
     opts = opts || {};
     S.mode = opts.mode || "live";
     var root = $("[data-report]");
+    rescore(R);
     var out = renderReport(R, opts);
     root.innerHTML = out.html;
     wireReport(root, R, out);

@@ -11,9 +11,10 @@ TrooCRO reads your page, checks it against the TrooCRO signal library, tags ever
 
 ## What we check
 - Conversion review (40% of the score): the TrooCRO signals that apply to the page, each failure tagged to one of 79 buyer barriers.
-- Speed (20%): Google PageSpeed on mobile when available, otherwise estimated from the page's code.
-- Search and AI answers (20%): whether search engines and AI assistants can read, understand and recommend the store.
+- Speed (25%): Google PageSpeed on mobile when available, otherwise estimated from the page's code.
+- Search and AI answers (15%): whether search engines and AI assistants can read, understand and recommend the store.
 - Accessibility (20%): labels, alt text, language and contrast.
+- The weakest area pulls the total down further. Basics every store needs earn nothing when present and cost a lot when missing.
 - How AI agents see the page (shown, not scored).
 - Growth stack (shown, not scored): analytics, heatmaps, ad pixels, retention, reviews and testing tools.
 

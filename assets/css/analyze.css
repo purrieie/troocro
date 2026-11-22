@@ -737,3 +737,28 @@ details[open] > summary .chev::before { transform: rotate(-135deg); top: 7px; }
 .ag-canvas.is-real .ag-box { background: color-mix(in srgb, var(--c) 14%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); }
 .ag-canvas.is-real .ag-cur svg { filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
 @media (max-width: 900px) { .ag-real { right: 54px; } }
+
+/* warming up: pixel page */
+.ag-warm { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; background: radial-gradient(70% 60% at 50% 40%, rgba(139,107,247,0.14), transparent 70%), #0B0B0F; transition: opacity 0.6s; }
+.ag-warm.out { opacity: 0; }
+.ag-warm .px { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: 3px; width: min(78%, 560px); }
+.ag-warm .px i { aspect-ratio: 1; border-radius: 2px; background: rgba(255,255,255,0.035); transition: background-color 0.35s, transform 0.35s; }
+.ag-warm .px i.tw { background: rgba(203,190,253,0.18); }
+.ag-warm .px i.m.on { transform: scale(1); }
+.ag-warm .px i.nav.on { background: #3B3550; } .ag-warm .px i.img.on { background: #6A4BE6; } .ag-warm .px i.title.on { background: #F4F3F8; }
+.ag-warm .px i.star.on { background: #E5A93D; } .ag-warm .px i.price.on { background: #CBBEFD; } .ag-warm .px i.cta.on { background: #8B6BF7; box-shadow: 0 0 10px rgba(139,107,247,0.6); }
+.ag-warm .px i.trust.on { background: #4CC38A; } .ag-warm .px i.text.on { background: #5A566A; } .ag-warm .px i.foot.on { background: #2E2B3A; }
+.ag-warm-t { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-2); }
+.ag-warm-t b { font-weight: 400; color: #fff; min-width: 270px; }
+.ag-warm-dots { display: inline-flex; gap: 4px; } .ag-warm-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--purple-2); animation: an-pulse 1s infinite; } .ag-warm-dots i:nth-child(2) { animation-delay: 0.2s; } .ag-warm-dots i:nth-child(3) { animation-delay: 0.4s; }
+.ag-canvas.warming .ag-cur, .ag-canvas.warming .ag-pin { opacity: 0 !important; }
+@media (max-width: 600px) { .ag-warm-t { flex-wrap: wrap; justify-content: center; text-align: center; } .ag-warm-t b { min-width: 0; } }
+
+/* what moved the score */
+.rp-moved { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+.rp-moved b { display: block; font-weight: 500; font-size: 13px; color: #fff; margin-bottom: 6px; }
+.rp-moved ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.rp-moved li { font-size: 13px; color: var(--text-2); padding-left: 16px; position: relative; line-height: 1.45; }
+.rp-moved li::before { position: absolute; left: 0; top: 0; font-family: var(--f-mono); }
+.rp-moved li.up::before { content: "+"; color: var(--green); } .rp-moved li.dn::before { content: "−"; color: var(--red); }
+@media (max-width: 600px) { .rp-moved { grid-template-columns: 1fr; } }

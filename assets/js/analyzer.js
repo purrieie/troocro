@@ -451,13 +451,57 @@
         '<div class="pg-rev" data-r="reviews">' + stars + '<i></i><i></i></div><div class="pg-sec" data-r="content"><i></i><i style="width:70%"></i></div>' + foot;
     }
     var pg = $("[data-ag-page]");
-    pg.className = "ag-page " + (pdp ? "is-pdp" : "is-home");
+    pg.className = "ag-page " + (pdp ? "is-pdp" : "is-home") + (RV ? " hide" : "");
     pg.innerHTML = h;
     var og = String(p.ogImage || "");
     if (/^https:\/\//i.test(og)) {
       var img = new Image(); img.alt = ""; img.onload = function () { var box = $('[data-ag-page] [data-r="img"]'); if (box) { box.style.backgroundImage = 'url("' + og.replace(/"/g, "%22") + '")'; box.classList.add("has-img"); } }; img.src = og;
     }
-    if (S.viewP) S.viewP.then(function (v) { if (v && v.html && S.running) mountReal(v, p); });
+  }
+
+  /* ---------- warming up: a pixel page assembles while we fetch and render the real one ---------- */
+  var warmT = 0, warmLineT = 0;
+  function viewDone(ok) { if (S._viewRes) { S._viewRes(!!ok); S._viewRes = null; } }
+  function warmStart() {
+    var view = $(".ag-view"); if (!view) return;
+    var old = $("[data-ag-warm]"); if (old) old.remove();
+    var cols = 34, rows = 22, cells = [], mask = [];
+    function inMask(c, r) {
+      if (r === 1 && c >= 2 && c <= 31) return "nav";
+      if (r >= 3 && r <= 13 && c >= 2 && c <= 16) return "img";
+      if (r === 4 && c >= 18 && c <= 30) return "title";
+      if (r === 5 && c >= 18 && c <= 26) return "title";
+      if (r === 7 && c >= 18 && c <= 22) return "star";
+      if (r === 9 && c >= 18 && c <= 23) return "price";
+      if (r >= 11 && r <= 12 && c >= 18 && c <= 31) return "cta";
+      if (r === 14 && (c >= 18 && c <= 31) && c % 5 !== 2) return "trust";
+      if ((r === 16 || r === 18) && c >= 2 && c <= 29) return "text";
+      if (r === 20 && c >= 2 && c <= 31 && c % 8 < 6) return "foot";
+      return "";
+    }
+    var h = '<div class="ag-warm" data-ag-warm aria-hidden="true"><div class="px" style="--cols:' + cols + '">';
+    for (var r = 0; r < rows; r++) for (var c = 0; c < cols; c++) { var m = inMask(c, r); h += '<i class="' + (m ? "m " + m : "") + '"></i>'; }
+    h += '</div><div class="ag-warm-t"><span class="an-label">Warming up</span><b data-warm-line>Fetching your page</b><span class="ag-warm-dots"><i></i><i></i><i></i></span></div></div>';
+    view.insertAdjacentHTML("beforeend", h);
+    $(".ag-canvas").classList.add("warming");
+    var lit = $$("[data-ag-warm] .px i.m"), all2 = $$("[data-ag-warm] .px i:not(.m)");
+    lit.sort(function () { return Math.random() - 0.5; });
+    var k = 0;
+    clearInterval(warmT);
+    warmT = setInterval(function () {
+      for (var j = 0; j < 5 && k < lit.length; j++, k++) lit[k].classList.add("on");
+      var x = all2[Math.floor(Math.random() * all2.length)]; if (x) { x.classList.add("tw"); setTimeout(function () { x.classList.remove("tw"); }, 500); }
+      if (k >= lit.length) { k = 0; lit.forEach(function (q) { q.classList.remove("on"); }); lit.sort(function () { return Math.random() - 0.5; }); }
+    }, REDUCED ? 400 : 45);
+    var lines = ["Fetching your page", "Removing scripts and trackers", "Rendering it on a 390px phone", "Finding the button, price and reviews", "Briefing the agents"], li = 0;
+    clearInterval(warmLineT);
+    warmLineT = setInterval(function () { li = Math.min(li + 1, lines.length - 1); var el = $("[data-warm-line]"); if (el) el.textContent = lines[li]; }, 1700);
+  }
+  function warmEnd() {
+    clearInterval(warmT); clearInterval(warmLineT);
+    var w = $("[data-ag-warm]"), cv = $(".ag-canvas");
+    if (w) { w.classList.add("out"); setTimeout(function () { w.remove(); }, 650); }
+    if (cv) cv.classList.remove("warming");
   }
 
   /* ---------- the real page: fetched without scripts and drawn in a sandboxed frame ---------- */
@@ -487,8 +531,8 @@
     function ready() {
       if (done) return; done = true;
       var d, w;
-      try { d = fr.contentDocument; w = fr.contentWindow; } catch (e) { holder.remove(); return; }
-      if (!d || !d.body) { holder.remove(); return; }
+      try { d = fr.contentDocument; w = fr.contentWindow; } catch (e) { holder.remove(); viewDone(false); return; }
+      if (!d || !d.body) { holder.remove(); viewDone(false); return; }
       $$("img", d).forEach(function (im) {
         var ds = im.getAttribute("data-src") || im.getAttribute("data-lazy-src") || im.getAttribute("data-original");
         var dss = im.getAttribute("data-srcset");
@@ -499,11 +543,12 @@
       setTimeout(function () {
         var text = (d.body.innerText || "").replace(/\s+/g, " ").length;
         var els = findRegions(d, w);
-        if (text < 250 || (!els.title && !els.cta)) { holder.remove(); return; }
+        if (text < 250 || (!els.title && !els.cta)) { holder.remove(); viewDone(false); return; }
         RV = { frame: fr, doc: d, win: w, scale: scale, els: els, H: H, pins: [] };
         holder.classList.add("on"); pg.classList.add("hide");
         $(".ag-canvas").classList.add("is-real");
-        addFeed("act", "Loaded your live page", "The agents now work on your real page, drawn without its scripts", "", "reader");
+        addFeed("act", "Loaded your live page", "Drawn without its scripts, so nothing on your store runs or changes", "", "reader");
+        viewDone(true);
       }, 700);
     }
     fr.addEventListener("load", ready);
@@ -688,7 +733,11 @@
     S.running = true; S.psi = null; S.comps = []; S.report = null; S.saved = false; S.saveState = ""; feedN = 0;
     show("scan");
     S.viewP = fetchView(S.url);
+    S.viewReady = new Promise(function (res) { S._viewRes = res; });
+    S.croP = S.viewP.then(function (v) { return v && v.html ? measureCro(v.html) : null; });
     buildStages();
+    warmStart();
+    S.viewP.then(function (v) { if (v && v.html && S.running) mountReal(v); else viewDone(false); });
     $("[data-s-done]").hidden = true;
     $("[data-s-status]").textContent = "Scanning"; $("[data-s-status]").classList.add("live");
     $("[data-s-verb]").textContent = "Reading"; $("[data-ag-canvas]").classList.remove("is-done"); $(".ag-livepill").lastChild.textContent = "Live";
@@ -717,7 +766,13 @@
     rescore(r, lib.signals);
     var p = r.page || {};
     paintPage(r);
-    await sleep(350);
+    setAgent("reader", null, "Waiting for your page to render");
+    var real = await Promise.race([S.viewReady, sleep(Math.max(1500, 16000 - (Date.now() - t0Scan)))]);
+    if (!real) viewDone(false);
+    warmEnd();
+    await sleep(500);
+    AGENTS.forEach(function (a) { park(a.id); });
+    if (!RV) addFeed("info", "Showing a drawing of your page", "We couldn't render the live page here, so the agents work on a map of it built from its code", "", "reader");
     stage("open", "done", (hostOf(r.url) || S.host) + (r.lite && r.lite.ttfbMs != null ? " answered in " + r.lite.ttfbMs + "ms" : " answered"));
     addFeed("act", "Page opened", r.lite && r.lite.ttfbMs != null ? "Server answered in " + r.lite.ttfbMs + "ms, " + (r.lite.htmlKb || "?") + " KB of HTML" : "", "");
 
@@ -875,6 +930,9 @@
     curAgent = "plan";
     stage("plan", "run", "Ranking fixes by impact and effort");
     S.report = buildReport(r, psi, comps);
+    var cro = await Promise.race([S.croP, sleep(9000).then(function () { return null; })]);
+    if (cro) { S.report.cro = { score: cro.score, raw: cro.raw, up: cro.up, down: cro.down, f: cro.f, v: 3, n: cro.n }; addFeed("act", "Benchmarked the page", "Shopper experience " + cro.score + "/100 against " + cro.n + " product pages", "", "plan"); }
+    else addFeed("info", "Limited score", "We couldn't measure the page on a phone, so the score uses its code only", "", "plan");
     var C = compute(S.report);
     var T = testsOf(S.report, findingsOf(S.report));
     for (var ti = 0; ti < T.length; ti++) {
@@ -934,6 +992,223 @@
   }
 
   /* ---------------- scoring and planning ---------------- */
+
+  /* ---------------- shopper-experience score (v3): benchmarked, not hand-weighted ----------------
+     We render the page on a 390px phone (scripts removed), measure what a shopper actually sees, and score it
+     against 60 product pages we measured the same way (strong D2C brands, mid-size stores, small unknown stores).
+     Weights were learned from those pages with sign constraints (a feature can only help if CRO practice says it helps),
+     then the output is calibrated so the typical poor page lands near 30, average near 55 and strong near 80. */
+  /* TrooCRO page features: measured on the page as a shopper sees it on a phone (390px wide, first screen 844px).
+     Works on any document: the calibration harness and the live analyzer run this same function. */
+  function croFeatures(d, w) {
+    var VW = 390, VH = 844;
+    var sy = w.scrollY || 0;
+    function R(el) { var r = el.getBoundingClientRect(); return { x: r.left, y: r.top + sy, w: r.width, h: r.height, b: r.bottom + sy }; }
+    function cs(el) { try { return w.getComputedStyle(el); } catch (e) { return null; } }
+    function vis(el) {
+      if (!el || !el.getBoundingClientRect) return false;
+      var r = el.getBoundingClientRect(); if (r.width < 6 || r.height < 6) return false;
+      var s = cs(el); if (!s) return false;
+      return s.visibility !== "hidden" && s.display !== "none" && +s.opacity > 0.05;
+    }
+    function tx(el) { return ((el && (el.innerText || el.textContent)) || "").replace(/\s+/g, " ").trim(); }
+    function all(sel) { try { return Array.prototype.slice.call(d.querySelectorAll(sel)); } catch (e) { return []; } }
+    function lum(c) {
+      var m = String(c || "").match(/rgba?\(([^)]+)\)/); if (!m) return null;
+      var p = m[1].split(",").map(function (x) { return parseFloat(x); });
+      if (p.length > 3 && p[3] < 0.1) return null;
+      var f = function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(p[0]) + 0.7152 * f(p[1]) + 0.0722 * f(p[2]);
+    }
+    function bgOf(el) { for (var e = el; e && e.nodeType === 1; e = e.parentElement) { var s = cs(e); var L = s && lum(s.backgroundColor); if (L != null) return L; } return 1; }
+    function contrast(a, b) { var hi = Math.max(a, b), lo = Math.min(a, b); return (hi + 0.05) / (lo + 0.05); }
+    var body = d.body; if (!body) return null;
+    var full = tx(body), low = full.toLowerCase();
+    var docH = Math.max(body.scrollHeight, d.documentElement.scrollHeight);
+    var F = {};
+    F.words = Math.min(6000, full ? full.split(" ").length : 0);
+    F.overflow = (d.documentElement.scrollWidth > VW + 12) ? 1 : 0;
+
+    /* main button */
+    var ATC = /^(add to (cart|bag|basket)|buy (it )?now|add to order|order now|shop now|add$|buy$|pre-?order|add \+)/i;
+    var cta = null;
+    all("button, input[type=submit], a, [role=button]").some(function (el) {
+      var t = tx(el) || el.value || "";
+      if (t.length > 36 || !ATC.test(t)) return false;
+      if (!vis(el)) return false;
+      var r = R(el); if (r.w < 60 || r.h < 24) return false;
+      cta = el; return true;
+    });
+    var ctaR = cta ? R(cta) : null;
+    F.cta_found = cta ? 1 : 0;
+    F.cta_atf = ctaR ? (ctaR.y < VH ? 1 : ctaR.y < VH * 1.6 ? 0.5 : 0) : 0;
+    F.cta_height = ctaR ? Math.min(64, ctaR.h) : 0;
+    F.cta_width = ctaR ? Math.min(1, ctaR.w / (VW - 24)) : 0;
+    if (cta) {
+      var s = cs(cta), bl = lum(s.backgroundColor), fl = lum(s.color);
+      var own = bl == null ? bgOf(cta.parentElement) : bl, page = bgOf(cta.parentElement);
+      F.cta_contrast = Math.min(8, contrast(own, page)); // button vs page
+      F.cta_text_contrast = Math.min(15, contrast(own, fl == null ? 0 : fl));
+      F.cta_filled = bl != null && Math.abs(bl - page) > 0.15 ? 1 : 0;
+    } else { F.cta_contrast = 1; F.cta_text_contrast = 1; F.cta_filled = 0; }
+
+    /* price and offer */
+    var priceEl = null;
+    all("[class*=price], [id*=price], [data-price]").some(function (el) { var t = tx(el); if (!/\d/.test(t) || t.length > 80 || !vis(el)) return false; var r = R(el); if (r.y > 2200) return false; priceEl = el; return true; });
+    var pR = priceEl ? R(priceEl) : null;
+    F.price_atf = pR ? (pR.y < VH ? 1 : pR.y < VH * 1.6 ? 0.5 : 0) : 0;
+    var priceZone = priceEl ? tx(priceEl.parentElement && priceEl.parentElement.parentElement || priceEl).toLowerCase().slice(0, 300) : "";
+    F.offer = /(\d{1,2})\s*%\s*off|save\s*(₹|rs|\$|£|\d)|mrp|you save|was\s*(₹|rs|\$|£)|<s>/.test(priceZone) || (priceEl && priceEl.parentElement && priceEl.parentElement.querySelector("s, del, [class*=compare], [class*=regular], [class*=strike]")) ? 1 : 0;
+    F.emi = /\bemi\b|pay later|pay in \d|klarna|afterpay|snapmint|simpl|lazypay|interest[- ]free|no[- ]cost/.test(low) ? 1 : 0;
+
+    /* stars and reviews near the title */
+    var topTxt = "";
+    var h1 = all("h1").filter(vis)[0] || null, h1R = h1 ? R(h1) : null;
+    F.h1 = h1 ? 1 : 0;
+    F.title_len = h1 ? Math.min(160, tx(h1).length) : 0;
+    var ratingEl = null;
+    all("[class*=rating], [class*=review], [class*=stars], [class*=star-], [class*=jdgm], [class*=yotpo], [class*=loox], [class*=okendo], [class*=stamped], [class*=trustpilot], [aria-label*=star], [aria-label*=rating]").some(function (el) {
+      if (!vis(el)) return false; var r = R(el); if (r.y > 1500) return false;
+      if (h1R && Math.abs(r.y - h1R.y) > 600) return false;
+      ratingEl = el; return true;
+    });
+    var ratingText = /(\d(\.\d)?)\s*(\/\s*5|out of 5|stars?|★)|★★|\(\s*\d[\d,]*\s*\)|\d[\d,]*\s*(reviews|ratings)/i;
+    F.rating_top = ratingEl ? 1 : 0;
+    if (!ratingEl && h1R) {
+      var near = all("span, div, a, p").filter(function (el) { if (el.children.length > 3) return false; var t = tx(el); if (!t || t.length > 60) return false; var r = el.getBoundingClientRect(); var y = r.top + sy; return Math.abs(y - h1R.y) < 300 && ratingText.test(t) && r.width > 10; });
+      if (near.length) F.rating_top = 1;
+    }
+    var rc = 0; (full.match(/(\d[\d,]{0,7})\+?\s*(verified\s*)?(reviews|ratings)/gi) || []).forEach(function (m) { var n = parseInt(m.replace(/[^\d]/g, ""), 10); if (n > rc && n < 2000000) rc = n; });
+    F.review_count_log = rc ? Math.log10(1 + rc) : 0;
+    var cards = all("[class*=review-item], [class*=review_item], [class*=reviewItem], [class*=jdgm-rev], [class*=yotpo-review], [class*=loox-review], [class*=okendo-review], [class*=review-card], [class*=testimonial], [class*=review]").filter(function (el) { var t = tx(el); return t.length > 60 && t.length < 1500 && vis(el); });
+    F.review_cards = Math.min(20, cards.length);
+
+    /* product media */
+    var big = 0, thumbs = 0, heroArea = 0;
+    all("img, picture, video").forEach(function (el) {
+      var r = el.getBoundingClientRect(); var y = r.top + sy;
+      if (y > 1600 || r.width < 30) return;
+      if (r.width >= 200 && r.height >= 150) { big++; heroArea = Math.max(heroArea, Math.min(r.width, VW) * Math.min(r.height, VH)); }
+      else if (r.width >= 36 && r.width < 140 && r.height >= 36 && r.height < 160) thumbs++;
+    });
+    F.gallery = Math.min(10, big + thumbs);
+    F.hero_ratio = Math.min(1, heroArea / (VW * VH));
+    F.video = all("video").length ? 1 : (/youtube|vimeo|\.mp4|video/.test((body.innerHTML || "").slice(0, 400000).toLowerCase()) ? 0.5 : 0);
+
+    /* reassurance next to the button */
+    var TRUST = ["free (shipping|delivery)", "cash on delivery|\\bcod\\b", "return|exchange|refund", "warranty|guarantee", "secure|safe (checkout|payment)", "genuine|authentic|original", "certified|dermatolog|clinically|lab[- ]tested|fssai|hallmark", "made in|handmade|handcrafted|cruelty[- ]free|vegan|natural", "delivery|dispatch|ships", "\\d[\\d,.]*\\s*(k|lakh|l|m)?\\+?\\s*(happy )?(customers|orders|sold|users)"];
+    var zone = "";
+    if (ctaR) {
+      all("div, li, span, p, small, img").forEach(function (el) {
+        if (el.children.length > 6) return;
+        var r = el.getBoundingClientRect(), y = r.top + sy;
+        if (y < ctaR.y - 250 || y > ctaR.b + 650 || r.width < 8) return;
+        var t = (el.tagName === "IMG" ? (el.alt || "") : tx(el)); if (t && t.length < 140) zone += " " + t.toLowerCase();
+      });
+    }
+    F.trust_near = TRUST.filter(function (p) { return new RegExp(p).test(zone); }).length;
+    F.delivery_near = /(deliver(y|ed|s)?|dispatch(ed|es)?|ships?|arrives?|get it)\s*(by|in|within|on|tomorrow|today)|pin ?code|check delivery|estimated delivery|delivery date/.test(zone) ? 1 : 0;
+    F.trust_page = TRUST.filter(function (p) { return new RegExp(p).test(low); }).length;
+
+    /* story and structure */
+    var bullets = 0;
+    all("li").forEach(function (el) { var r = el.getBoundingClientRect(), y = r.top + sy; var t = tx(el); if (y < 2600 && t.length >= 12 && t.length <= 140 && vis(el) && !el.querySelector("a[href*='/collections'], a[href*='/pages']") && !(el.closest && el.closest("nav, header, footer"))) bullets++; });
+    F.benefit_bullets = Math.min(12, bullets);
+    var heads = all("main h2, main h3, main h4, h2, h3").filter(function (el) { return vis(el) && !(el.closest && el.closest("header, footer, nav")); }).length;
+    F.headings = Math.min(25, heads);
+    F.accordions = Math.min(12, all("details, [class*=accordion], [class*=collapsible], [class*=tab-]").filter(vis).length);
+    F.faq = /\bfaqs?\b|frequently asked|questions\?/.test(low) ? 1 : 0;
+    F.crosssell = /(frequently bought|bought together|you may also like|complete the (look|routine|set)|pairs well|customers also|recommended for you|related products|goes well with|shop the look|bundle)/.test(low) ? 1 : 0;
+    F.urgency = /only \d+ left|few left|selling fast|low (in )?stock|hurry|ends (in|tonight|today)|sale ends|\d+\s*(people|customers) (are )?(viewing|bought|watching)|sold in (the )?(last|past)|bought in (the )?(last|past)/.test(low) ? 1 : 0;
+    F.social_scale = /(as seen in|featured in|trusted by|\d[\d,.]*\s*(k|lakh|l|m|million)?\+?\s*(happy )?(customers|users|families|orders))/.test(low) ? 1 : 0;
+    F.compare_table = all("main table, [class*=compar]").filter(vis).length ? 1 : 0;
+    F.breadcrumb = all("[class*=breadcrumb], nav[aria-label*=readcrumb]").length ? 1 : 0;
+    F.variants_ui = all("[class*=swatch], variant-radios, fieldset input[type=radio], [class*=variant] button, [class*=option-value], [class*=size-btn]").filter(vis).length ? 1 : (all("select[name*=ption], select[name*=ariant]").length ? 0.5 : 0);
+    F.sticky_cta = all("[class*=sticky], [class*=fixed]").some(function (el) { var t = tx(el); return t.length < 300 && /add to (cart|bag)|buy now/i.test(t); }) ? 1 : 0;
+
+    /* friction and clutter */
+    var longest = 0; all("p, div").forEach(function (el) { if (el.children.length > 2) return; var t = tx(el); if (t.length > longest && vis(el)) longest = t.length; });
+    F.text_wall = longest > 1200 ? 2 : longest > 650 ? 1 : 0;
+    var small = 0, sampled = 0, fams = {};
+    all("p, span, li, a, div").slice(0, 1500).forEach(function (el) {
+      if (el.children.length) return; var t = tx(el); if (t.length < 3) return;
+      var r = el.getBoundingClientRect(); if (r.top + sy > 3000 || r.width < 5) return;
+      var s = cs(el); if (!s) return; sampled++;
+      if (parseFloat(s.fontSize) < 12) small++;
+      fams[String(s.fontFamily).split(",")[0].replace(/['"]/g, "").trim().toLowerCase()] = 1;
+    });
+    F.small_text = sampled ? small / sampled : 0;
+    F.font_families = Math.min(8, Object.keys(fams).length);
+    var taps = all("a, button").filter(function (el) { var r = el.getBoundingClientRect(); var y = r.top + sy; return y < 2500 && r.width > 4 && r.height > 4 && r.height < 28 && r.width < 28 && vis(el); }).length;
+    F.tiny_taps = Math.min(30, taps);
+    F.fixed_layers = all("body *").slice(0, 3000).filter(function (el) { var s = cs(el); if (!s || (s.position !== "fixed")) return false; var r = el.getBoundingClientRect(); return r.width * r.height > VW * VH * 0.25 && vis(el); }).length;
+    F.announce = all("[class*=announcement], [class*=marquee], [class*=ticker], [class*=topbar], [class*=top-bar]").filter(vis).length ? 1 : 0;
+    F.broken_imgs = (function () { var im = all("img").filter(function (i) { var r = i.getBoundingClientRect(); return r.top + sy < 1500 && r.width > 60; }); if (!im.length) return 0; return im.filter(function (i) { return i.complete && i.naturalWidth === 0; }).length / im.length; })();
+    F.doc_height_screens = Math.min(20, docH / VH);
+    return F;
+  }
+  var CRO_MODEL = {"names": ["cta_atf", "cta_filled", "sticky_cta", "price_atf", "rating_top", "offer", "delivery_near", "trust_near", "benefits", "structure", "breadcrumb", "compare", "faq", "social", "reviews", "gallery", "video", "crosssell", "variants", "cta_contrast", "no_overflow", "short_title", "no_wall", "no_popup"], "mu": [0.55, 0.7167, 0.6167, 0.625, 0.6667, 0.6667, 0.4, 0.4292, 0.4167, 0.5489, 0.4833, 0.5167, 0.75, 0.1333, 0.2714, 0.9139, 0.5667, 0.4167, 0.45, 0.7231, 0.8833, 0.9394, 0.15, 0.7667], "sd": [0.4252, 0.4506, 0.4862, 0.4044, 0.4714, 0.4714, 0.4899, 0.3294, 0.4362, 0.3805, 0.4997, 0.4997, 0.433, 0.3399, 0.3997, 0.2075, 0.3223, 0.493, 0.489, 0.3399, 0.321, 0.1456, 0.2784, 0.423], "w": [0.0848, 0.0292, 0.0589, 0.0193, 0.0537, 0.0015, 0.0417, 0.0078, 0.0486, 0.0468, 0.0406, 0.0, 0.0187, 0.0207, 0.0194, 0.018, 0.0, 0.0235, 0.0053, 0.0, 0.0702, 0.0338, 0.0354, 0.0], "anchors": [-0.3261, -0.0307, 0.1512], "n": 60};
+  var CRO_LABEL = {
+    cta_atf: "Add to cart on the first screen", cta_filled: "Solid, high-contrast main button", sticky_cta: "Add to cart stays in reach while scrolling",
+    price_atf: "Price on the first screen", rating_top: "Star rating near the product name", offer: "Discount or MRP next to the price",
+    delivery_near: "Delivery date next to the button", trust_near: "Reassurance badges by the button", benefits: "Scannable benefit points",
+    structure: "Clear sections and headings", breadcrumb: "Breadcrumbs to find the way back", faq: "Answers to common questions",
+    social: "Brand-scale proof (customers, press)", reviews: "Review count shown", gallery: "A real product photo gallery",
+    crosssell: "Bundles or cross-sell", variants: "Easy variant buttons", no_overflow: "Page fits the phone screen",
+    short_title: "Short, scannable product name", no_wall: "No walls of text", compare: "Comparison table", video: "Product video",
+    cta_contrast: "Button stands out from the page", no_popup: "No popups covering the page"
+  };
+  function croVector(f) {
+    function cap(v, c) { return Math.min(v || 0, c) / c; }
+    return { cta_atf: f.cta_atf, cta_filled: f.cta_filled, sticky_cta: f.sticky_cta, price_atf: f.price_atf, rating_top: f.rating_top, offer: f.offer,
+      delivery_near: f.delivery_near, trust_near: cap(f.trust_near, 4), benefits: cap(f.benefit_bullets, 6), structure: cap(f.headings, 15),
+      breadcrumb: f.breadcrumb, compare: f.compare_table, faq: f.faq, social: f.social_scale, reviews: cap(f.review_count_log, 3), gallery: cap(f.gallery, 6),
+      video: f.video, crosssell: f.crosssell, variants: f.variants_ui, cta_contrast: cap(f.cta_contrast, 4), no_overflow: 1 - (f.overflow || 0),
+      short_title: 1 - Math.max(0, Math.min(1, ((f.title_len || 0) - 60) / 60)), no_wall: 1 - (f.text_wall || 0) / 2, no_popup: 1 - Math.min(f.fixed_layers || 0, 1) };
+  }
+  function croScoreOf(f) {
+    if (!f) return null;
+    var M = CRO_MODEL, v = croVector(f), raw = 0, parts = [];
+    M.names.forEach(function (n, i) { var c = M.w[i] * ((+v[n] || 0) - M.mu[i]) / M.sd[i]; raw += c; if (M.w[i] > 0) parts.push({ k: n, c: c, on: (+v[n] || 0) >= 0.5 }); });
+    var a = M.anchors, sc;
+    if (raw >= a[2]) sc = 80 + 18 * (1 - Math.exp(-(raw - a[2]) / (a[2] - a[1])));
+    else if (raw <= a[0]) sc = 30 - 25 * (1 - Math.exp(-(a[0] - raw) / (a[1] - a[0])));
+    else if (raw <= a[1]) sc = 30 + 25 * (raw - a[0]) / (a[1] - a[0]);
+    else sc = 55 + 25 * (raw - a[1]) / (a[2] - a[1]);
+    parts.sort(function (x, y) { return y.c - x.c; });
+    return { score: Math.round(sc), raw: Math.round(raw * 1000) / 1000, up: parts.filter(function (x) { return x.c > 0.004; }).slice(0, 4).map(function (x) { return x.k; }),
+      down: parts.filter(function (x) { return x.c < -0.004; }).reverse().slice(0, 4).map(function (x) { return x.k; }), f: f, v: 3, n: M.n };
+  }
+  /* measure in a hidden phone-sized frame, exactly like the benchmark */
+  function measureCro(html) {
+    return new Promise(function (res) {
+      var fr = doc.createElement("iframe"), done = false;
+      fr.setAttribute("sandbox", "allow-same-origin"); fr.setAttribute("aria-hidden", "true"); fr.tabIndex = -1;
+      fr.style.cssText = "position:absolute;left:-10000px;top:0;width:390px;height:844px;border:0;visibility:hidden;pointer-events:none";
+      fr.srcdoc = html; doc.body.appendChild(fr);
+      function finish(x) { if (done) return; done = true; try { fr.remove(); } catch (e) { /* gone */ } res(x); }
+      fr.addEventListener("load", function () {
+        var d, w; try { d = fr.contentDocument; w = fr.contentWindow; } catch (e) { return finish(null); }
+        if (!d || !d.body) return finish(null);
+        $$("img", d).forEach(function (im) {
+          var ds = im.getAttribute("data-src") || im.getAttribute("data-lazy-src") || im.getAttribute("data-original"), dss = im.getAttribute("data-srcset");
+          if (ds && (!im.getAttribute("src") || /data:image|placeholder|blank/i.test(im.getAttribute("src")))) im.setAttribute("src", ds.replace(/\{width\}/g, "800"));
+          if (dss && !im.getAttribute("srcset")) im.setAttribute("srcset", dss.replace(/\{width\}/g, "800"));
+          im.removeAttribute("loading");
+        });
+        setTimeout(function () {
+          try {
+            var f = croFeatures(d, w);
+            var visibleText = (d.body.innerText || "").replace(/\s+/g, " ").length;
+            if (!f || visibleText < 250 || (!f.cta_found && !f.h1)) return finish(null);
+            finish(croScoreOf(f));
+          } catch (e) { finish(null); }
+        }, 2200);
+      });
+      setTimeout(function () { finish(null); }, 14000);
+    });
+  }
+
   /* ---------------- stricter scoring (v2) ----------------
      Table-stakes checks (viewport, price shown, contact...) earn nothing when they pass and cost a lot when they fail.
      Checks we can only confirm by a keyword somewhere on the page get partial credit.
@@ -980,6 +1255,20 @@
   function compute(R) {
     var areas = [];
     rescore(R);
+    if (R.cro && R.cro.score != null) {
+      var ps3 = R.psi && R.psi.scores ? R.psi.scores : null, realSpeed = ps3 && ps3.performance != null;
+      areas.push({ key: "conversion", name: "Shopper experience", w: realSpeed ? 80 : 100, v: R.cro.score, src: "Ranked against " + (R.cro.n || 60) + " product pages we measured the same way" });
+      if (realSpeed) areas.push({ key: "speed", name: "Speed", w: 20, v: ps3.performance, src: "Google PageSpeed, mobile" });
+      else areas.push({ key: "speed", name: "Speed", w: 0, ctx: true, est: true, v: R.lite ? R.lite.speedEstimate : null, src: "Estimated, so not scored" });
+      var aiC = (R.ai && R.ai.checks) || [];
+      areas.push({ key: "search", name: "Search & AI", w: 0, ctx: true, v: R.ai ? R.ai.readiness : null, src: aiC.filter(function (x) { return x.pass; }).length + " of " + aiC.length + " checks passed" });
+      areas.push({ key: "a11y", name: "Accessibility", w: 0, ctx: true, v: ps3 && ps3.accessibility != null ? ps3.accessibility : (R.lite ? R.lite.a11yEstimate : null), est: !(ps3 && ps3.accessibility != null), src: "Shown, not scored" });
+      areas.push({ key: "agent", name: "Agent readiness", w: 0, v: R.ai && R.ai.agent ? R.ai.agent.score : null, ctx: true, src: "Shown, not scored" });
+      areas.push({ key: "stack", name: "Growth stack", w: 0, v: R.stack ? R.stack.score : null, ctx: true, src: "Shown, not scored" });
+      var t3 = realSpeed ? Math.round(0.8 * R.cro.score + 0.2 * ps3.performance) : R.cro.score;
+      var v3 = t3 >= 80 ? "Strong. Small gains left." : t3 >= 65 ? "Good, with clear room to grow." : t3 >= 45 ? "Average. Real sales are slipping away." : "Needs work. Shoppers are hitting walls.";
+      return { areas: areas, total: t3, est: false, verdict: v3, v3: true };
+    }
     var conv = R.conversion && R.conversion.score != null ? R.conversion.score : null;
     areas.push({ key: "conversion", name: "Conversion", w: 40, v: conv, src: conv == null ? "Not measured: content loads with JavaScript" : R.conversion.passed + " of " + R.conversion.applicable + " checks passed" });
     var ps = R.psi && R.psi.scores ? R.psi.scores : null;
@@ -998,7 +1287,7 @@
     // weakest link: one badly broken area drags the whole score down
     var total = avg == null ? null : Math.round(avg - 0.3 * Math.max(0, avg - low));
     var verdict = total == null ? "Not enough to score" : total >= 85 ? "Strong. Small gains left." : total >= 70 ? "Good, with clear room to grow." : total >= 50 ? "Fair. Real sales are slipping away." : "Needs work. Shoppers are hitting walls.";
-    return { areas: areas, total: total, est: est, verdict: verdict };
+    return { areas: areas, total: total, est: est, verdict: verdict, limited: true };
   }
   function prio(f) {
     var s = f.sig || {}, fx = s.fix || {};
@@ -1127,7 +1416,12 @@
     h += '<div class="rp-areas">' + C.areas.map(function (a) {
       return '<div class="rp-area' + (a.ctx ? " ctx" : "") + (a.v == null ? " na" : "") + '" title="' + esc(a.src) + '"><span class="nm">' + esc(a.name) + (a.est && a.v != null ? "<em>est.</em>" : "") + '</span><span class="bar"><i style="width:' + (a.v || 0) + "%;background:" + colorFor(a.v) + '"></i></span><b>' + (a.v == null ? "n/a" : a.v) + '</b><span class="w">' + (a.w ? a.w + "%" : "info") + "</span></div>";
     }).join("") + "</div>";
-    h += '<details class="rp-how"><summary>How the score works</summary><p>Conversion counts for 40%, speed 25%, accessibility 20% and search and AI 15%. Your weakest area pulls the total down further, because one broken area costs sales on its own. Basics every store needs, like a price or a contact link, earn nothing when present and cost a lot when missing, and checks we can only confirm from a keyword get partial credit. An area we couldn’t measure is left out, never counted as zero. Agent readiness and growth stack are shown for context, not scored.' + (C.est ? " Speed and accessibility are estimated from your page’s code when Google PageSpeed isn’t available." : "") + "</p></details></div>";
+    if (C.v3) {
+      var up = (R.cro.up || []).map(function (k) { return "<li class=\"up\">" + esc(CRO_LABEL[k] || k) + "</li>"; }).join("");
+      var dn = (R.cro.down || []).map(function (k) { return "<li class=\"dn\">" + esc(CRO_LABEL[k] || k) + "</li>"; }).join("");
+      h += '<details class="rp-how"><summary>How the score works</summary><p>We load your page on a 390px phone and measure what a shopper sees: the main button and price on the first screen, the stars near the product name, delivery and reassurance next to the button, how the page is structured and whether it fits the screen. Your page is then ranked against ' + (R.cro.n || 60) + ' product pages we measured the same way, from strong D2C brands to small unknown stores. The weights come from what separated the strong pages from the weak ones, not from guesswork. A typical weak page scores around 30, an average one around 55 and a strong one 80 or more.' + (R.psi ? " Google PageSpeed counts for 20%." : " Speed, search and accessibility are shown for context and don’t change this score.") + "</p>" + (up || dn ? '<div class="rp-moved">' + (up ? "<div><b>Helping your score</b><ul>" + up + "</ul></div>" : "") + (dn ? "<div><b>Holding it back</b><ul>" + dn + "</ul></div>" : "") + "</div>" : "") + "</details></div>";
+    } else
+    h += '<details class="rp-how"><summary>How the score works</summary><p>' + (C.limited ? "We couldn’t render this page on a phone, so this is a limited score from its code only. " : "") + 'Conversion counts for 40%, speed 25%, accessibility 20% and search and AI 15%. Your weakest area pulls the total down further, because one broken area costs sales on its own. Basics every store needs, like a price or a contact link, earn nothing when present and cost a lot when missing, and checks we can only confirm from a keyword get partial credit. An area we couldn’t measure is left out, never counted as zero. Agent readiness and growth stack are shown for context, not scored.' + (C.est ? " Speed and accessibility are estimated from your page’s code when Google PageSpeed isn’t available." : "") + "</p></details></div>";
     h += '<div class="rp-page"><div class="browser"><div class="bbar"><i></i><i></i><i></i><span class="url">' + esc(host + (path.length > 1 ? path : "")) + '</span></div><div class="bview' + (shot ? " phone" : "") + '">';
     if (shot) h += '<img class="full" src="' + esc(shot) + '" alt="Your page on a phone, as Google loaded it">';
     else {

@@ -696,23 +696,45 @@
     ["lcp", "fcp", "cls", "tbt", "si", "ttfb", "weightKb", "requests"].forEach(function (k) { var v = list.map(function (d) { return d.metrics && d.metrics[k]; }).filter(function (x) { return typeof x === "number"; }); if (v.length) { var m = v.reduce(function (s, x) { return s + x; }, 0) / v.length; out.metrics[k] = k === "cls" ? Math.round(m * 1000) / 1000 : Math.round(m); } });
     return out;
   }
+  /* Google PageSpeed with our key: one mobile lane and one desktop lane, each running up to 3 runs back to back
+     (parallel runs on the same URL slow Google down and some stores rate-limit them). Averages whatever finished
+     by the deadline. If nothing comes back, S.psiErr keeps Google's reason so the report can say it. */
   function runPsi(url) {
     var skipP = new Promise(function (res) { S.psiSkip = function () { res(null); }; });
+    S.psiErr = "";
     if (!win.TrooPSI || !win.AbortController) return Promise.resolve(null);
-    var key = CFG.psiKey || "", n = key ? 3 : 1;
+    var key = CFG.psiKey || "", N = key ? 3 : 1, t0 = Date.now(), res = { mobile: [], desktop: [] }, errs = [];
     function one(strategy) {
-      var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 95000);
+      var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 80000);
       return fetch(win.TrooPSI.psiUrl(url, strategy, key), { signal: ctl.signal })
-        .then(function (r) { if (!r.ok && win.console) console.warn("PageSpeed " + strategy + " " + r.status); return r.ok ? r.json() : null; })
-        .then(function (d) { clearTimeout(t); return d && d.lighthouseResult ? win.TrooPSI.compactPsi(d, strategy) : null; })
-        .catch(function () { clearTimeout(t); return null; });
+        .then(function (r) { return r.json().catch(function () { return null; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
+        .then(function (x) {
+          clearTimeout(t);
+          if (x.d && x.d.lighthouseResult) return { d: win.TrooPSI.compactPsi(x.d, strategy) };
+          var msg = x.d && x.d.error && x.d.error.message ? String(x.d.error.message) : "HTTP " + x.status;
+          return { err: msg };
+        })
+        .catch(function (e) { clearTimeout(t); return { err: e && e.name === "AbortError" ? "Google took longer than 80 seconds" : "Couldn't reach Google PageSpeed" }; });
     }
-    var p = new Promise(function (resolve) {
-      var mob = [], desk = [], left = 2 * n, done = false, grace = null;
-      function finish() { if (done) return; done = true; clearTimeout(grace); var m = avgPsi(mob); if (m) { var d = avgPsi(desk); if (d) m.desktop = { scores: d.scores, metrics: d.metrics, runs: d.runs }; } resolve(m); }
-      function got(list, d) { list.push(d); left--; if (left <= 0) finish(); else if (d && list === mob && !grace) grace = setTimeout(finish, 25000); }
-      /* staggered a few seconds apart: identical requests fired at once are more likely to be refused */
-      for (var i = 0; i < n; i++) (function (k) { setTimeout(function () { one("mobile").then(function (d) { got(mob, d); }); one("desktop").then(function (d) { got(desk, d); }); }, k * 3000); })(i);
+    function lane(strategy) {
+      return new Promise(function (resolve) {
+        var n = 0, fails = 0;
+        (function next() {
+          if (n >= N || fails >= 2 || Date.now() - t0 > 60000) return resolve();
+          n++;
+          one(strategy).then(function (x) {
+            if (x.d && x.d.scores && x.d.scores.performance != null) res[strategy].push(x.d);
+            else { fails++; errs.push(x.err || "No score returned"); if (win.console) console.warn("PageSpeed " + strategy + ": " + (x.err || "no score")); }
+            next();
+          });
+        })();
+      });
+    }
+    var p = Promise.race([Promise.all([lane("mobile"), lane("desktop")]), sleep(105000)]).then(function () {
+      var m = avgPsi(res.mobile);
+      if (m) { var d = avgPsi(res.desktop); if (d) m.desktop = { scores: d.scores, metrics: d.metrics, runs: d.runs }; }
+      else S.psiErr = errs[0] || "Google PageSpeed didn't answer in time";
+      return m;
     });
     return Promise.race([p, skipP]);
   }
@@ -794,6 +816,7 @@
     S.viewReady = new Promise(function (res) { S._viewRes = res; });
     S.croP = S.viewP.then(function (v) { return v && v.html ? measureCro(v.html) : null; });
     S.sideTxt = ""; S.sideMain = "";
+    S.psiP = runPsi(S.url);
     startGrowthReads();
     /* a second page of the same site: the homepage for a product page, one product page for anything else */
     S.sideP = Promise.all([S.viewP, S.croP]).then(function (x) {
@@ -848,7 +871,7 @@
     addFeed("act", "Page opened", r.lite && r.lite.ttfbMs != null ? "Server answered in " + r.lite.ttfbMs + "ms, " + (r.lite.htmlKb || "?") + " KB of HTML" : "", "");
 
     /* Speed and Market start now and work in parallel */
-    var psiP = runPsi(r.url);
+    var psiP = S.psiP || runPsi(r.url);
     var compP = runComps(r);
     curAgent = "speed";
     stage("speed", "run");
@@ -956,7 +979,7 @@
       clearInterval(thinkT.speed); clearInterval(row._tt);
       row.innerHTML = "Still measuring. <button class=\"skipbtn\" type=\"button\" data-skip-psi>Use an estimate</button>";
       var b = $("[data-skip-psi]"); if (b) b.addEventListener("click", function () { if (S.psiSkip) S.psiSkip(); });
-    }, 12000);
+    }, 45000);
     sweep(true, AG.speed.c);
     var psi = await psiP;
     clearTimeout(skipTimer);
@@ -1076,7 +1099,7 @@
     return {
       v: 1, slug: r.slug, createdAt: new Date().toISOString(), url: r.url, host: r.host,
       inputs: S.inputs, page: r.page, checks: r.checks, conversion: r.conversion, ai: r.ai, stack: r.stack, lite: r.lite,
-      benchmark: r.benchmark, psi: psiC, comps: comps || [],
+      benchmark: r.benchmark, psi: psiC, psiErr: psiC ? "" : (S.psiErr || ""), comps: comps || [],
       lib: { signals: signals, barriers: barriers, rootCauses: lib.rootCauses || {} }
     };
   }
@@ -2265,7 +2288,7 @@
       '<div class="an-metric ' + metricCls(lt.thirdPartyHosts, 10, 20) + '"><b>' + (lt.thirdPartyHosts != null ? lt.thirdPartyHosts : "n/a") + "</b><span>Third-party hosts</span></div>" +
       '<div class="an-metric ' + metricCls(lt.stylesheets, 6, 10) + '"><b>' + (lt.stylesheets != null ? lt.stylesheets : "n/a") + "</b><span>Stylesheets</span></div>" +
       '<div class="an-metric ' + metricCls(lt.imagesNoDims, 5, 12) + '"><b>' + (lt.imagesNoDims != null ? lt.imagesNoDims : "n/a") + "</b><span>Images without size</span></div></div>";
-    return { key: "speed", name: "Speed", title: "Speed, estimated", v: lt.speedEstimate != null ? lt.speedEstimate : null, est: true, sum: "Google PageSpeed wasn’t available for this scan, so we estimated speed from server response, page weight and scripts. A full TrooCRO diagnosis measures real load times on phones.", body: body };
+    return { key: "speed", name: "Speed", title: "Speed, estimated", v: lt.speedEstimate != null ? lt.speedEstimate : null, est: true, sum: "Google PageSpeed couldn’t measure this page" + (R.psiErr ? " (" + tidy(String(R.psiErr).replace(/^Lighthouse returned error:\s*/i, "").slice(0, 140)) + ")" : "") + ", so we estimated speed from server response, page weight and scripts. A full TrooCRO diagnosis measures real load times on phones.", body: body };
   }
   function tabSearch(R) {
     var ai = R.ai || {}, list = ai.checks || [], ok = list.filter(function (x) { return x.pass; }).length;

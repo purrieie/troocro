@@ -1,5 +1,7 @@
 // TrooCRO page view: fetches a public store page and returns its HTML with scripts removed,
 // so the analyzer can show the real page under the agents. Read-only, nothing stored.
+// ?raw=1 keeps the scripts (only <base> is set and CSP/refresh metas dropped): the analyzer runs that copy in a
+// sandboxed frame with no same-origin access, to read reviews and text that the store draws with JavaScript.
 const ALLOWED_ORIGINS = [/^https:\/\/purrieie\.github\.io$/, /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 TrooCRO-Analyzer/1.0";
 const MAX = 3_000_000;
@@ -25,7 +27,8 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: c.h });
   const json = (d: unknown, status = 200, extra: Record<string, string> = {}) => new Response(JSON.stringify(d), { status, headers: { ...c.h, ...extra, "Content-Type": "application/json; charset=utf-8" } });
   if (!c.ok) return json({ error: "origin_not_allowed" }, 403);
-  let cur = publicUrl(new URL(req.url).searchParams.get("url") || "");
+  const sp = new URL(req.url).searchParams, raw = sp.get("raw") === "1";
+  let cur = publicUrl(sp.get("url") || "");
   if (!cur) return json({ error: "bad_url" }, 400);
   let res: Response | null = null;
   try {
@@ -41,6 +44,12 @@ Deno.serve(async (req: Request) => {
   while (true) { const { done, value } = await reader.read(); if (done) break; n += value.length; parts.push(value); if (n > MAX) { try { await reader.cancel(); } catch { /* ignore */ } break; } }
   const buf = new Uint8Array(n); let o = 0; for (const p of parts) { buf.set(p.subarray(0, Math.min(p.length, n - o)), o); o += p.length; if (o >= n) break; }
   let html = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+  if (raw) {
+    html = html.replace(/<meta[^>]+http-equiv=["']?(?:refresh|content-security-policy)[^>]*>/gi, "").replace(/<base\b[^>]*>/gi, "");
+    const b = '<base href="' + esc(cur.href) + '">';
+    html = /<head\b[^>]*>/i.test(html) ? html.replace(/<head\b[^>]*>/i, (m) => m + b) : b + html;
+    return json({ url: cur.href, html, raw: true }, 200, { "Cache-Control": "public, max-age=300" });
+  }
   html = html
     .replace(/<script\b[\s\S]*?<\/script\s*>/gi, "")
     .replace(/<script\b[^>]*\/?>/gi, "")

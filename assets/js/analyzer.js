@@ -157,9 +157,15 @@
     stageEl.innerHTML = "";
     renderQ(0, 0);
   }
+  /* a service, fintech or software site (no prices, lead-style copy): don't guess a shop category for it */
+  function nonStore(p) {
+    if (!p) return false;
+    var txt = [p.title, p.description, p.heroHeadline, p.primaryCta].join(" ");
+    return !!p.lead || (!p.prices && !p.aov && /401\(k\)|retirement|pension|insurance|\bloans?\b|lending|mutual fund|invest(?:ing|ment)|payroll|software|platform|\bsaas\b|book a demo|request a demo|get a quote|clinic|hospital|consult/i.test(txt));
+  }
   function detectedFor(id) {
     var p = (S.detected && S.detected.page) || {};
-    if (id === "category") return CATS.indexOf(p.category) >= 0 ? p.category : null;
+    if (id === "category") return nonStore(p) ? null : CATS.indexOf(p.category) >= 0 ? p.category : null;
     if (id === "aovBand") return p.aovBand || null;
     return null;
   }
@@ -181,7 +187,8 @@
     }
     var det = detectedFor(q.id), cur = currentVal(q);
     var dp = (S.detected && S.detected.page) || {};
-    if (det) h += '<div class="qz-det">' + ICON_SPARK + "<span>We read you as <b>" + esc(q.id === "aovBand" ? bandLabel(det) : det) + "</b>. Keep it or pick another.</span></div>";
+    if (q.id === "category" && nonStore(dp)) h += '<div class="qz-det">' + ICON_SPARK + "<span>This looks like a service or software site, not a store, so we haven't guessed a category. Pick the closest one, or skip.</span></div>";
+    else if (det) h += '<div class="qz-det">' + ICON_SPARK + "<span>We read you as <b>" + esc(q.id === "aovBand" ? bandLabel(det) : det) + "</b>. Keep it or pick another.</span></div>";
     else if (q.id === "aovBand" && dp.aov && !rupees(dp.currency)) h += '<div class="qz-det">' + ICON_SPARK + "<span>Your page shows prices in " + esc(dp.currency) + " (about <b>" + esc(money(dp.aov, dp.currency)) + "</b>), so pick the closest rupee band yourself.</span></div>";
     h += '<div class="qz-opts c' + q.cols + '" role="radiogroup" aria-labelledby="qz-title">' + q.opts.map(function (o, k) {
       var on = cur !== undefined && String(cur) === String(o[0]);
@@ -237,7 +244,7 @@
     }
     if (bad) { var er = $("[data-qz-err]"); if (er) er.textContent = "Check the address: it should look like competitor.com."; return; }
     S.inputs = {
-      category: skip ? (det.category || "") : (QA.category || det.category || ""),
+      category: skip ? (nonStore(det) ? "" : det.category || "") : (QA.category || (nonStore(det) ? "" : det.category) || ""),
       aovBand: skip ? (det.aovBand || "") : (QA.aovBand || det.aovBand || ""),
       goal: skip ? "conversion" : (QA.goal || "conversion"),
       visitors: skip ? 0 : (+QA.visitors || 0),
@@ -520,6 +527,171 @@
       .then(function (r) { clearTimeout(t); return r.ok ? r.json() : null; })
       .catch(function () { return null; });
   }
+  /* ---------- the live read: the same page WITH its scripts, run in a hidden frame that has no access to this page
+     (sandbox without allow-same-origin), so reviews and text the store draws with JavaScript can be read ---------- */
+  function livePrelude() {
+    /* storage and cookies throw in a sandboxed frame; give the store's scripts harmless in-memory stand-ins */
+    var mem = function () { var o = {}; return { getItem: function (k) { return Object.prototype.hasOwnProperty.call(o, k) ? o[k] : null; }, setItem: function (k, v) { o[k] = String(v); }, removeItem: function (k) { delete o[k]; }, clear: function () { o = {}; }, key: function (i) { return Object.keys(o)[i] || null; }, get length() { return Object.keys(o).length; } }; };
+    try { Object.defineProperty(window, "localStorage", { value: mem(), configurable: true }); } catch (e) { /* keep */ }
+    try { Object.defineProperty(window, "sessionStorage", { value: mem(), configurable: true }); } catch (e) { /* keep */ }
+    try { Object.defineProperty(window, "indexedDB", { value: undefined, configurable: true }); } catch (e) { /* keep */ }
+    var jar = {};
+    try { Object.defineProperty(document, "cookie", { configurable: true, get: function () { return Object.keys(jar).map(function (k) { return k + "=" + jar[k]; }).join("; "); }, set: function (v) { var kv = String(v).split(";")[0], i = kv.indexOf("="); if (i > 0) jar[kv.slice(0, i).trim()] = kv.slice(i + 1); } }); } catch (e) { /* keep */ }
+    /* routers (Vue, React) fall back to location.assign when replaceState throws in a sandbox, which sends the copy away: let it fail quietly */
+    try { ["pushState", "replaceState"].forEach(function (k) { var o = History.prototype[k]; History.prototype[k] = function () { try { return o.apply(this, arguments); } catch (e) { return undefined; } }; }); } catch (e) { /* keep */ }
+    window.alert = window.confirm = window.prompt = function () { return null; };
+    window.open = function () { return null; };
+  }
+  function liveCollector(ID) {
+    var t0 = Date.now(), sent = false, y = 0, last = -1, calm = 0, started = false;
+    function q(sel) { try { return Array.prototype.slice.call(document.querySelectorAll(sel)); } catch (e) { return []; } }
+    function it(el) { try { return (el && el.innerText) || ""; } catch (e) { return ""; } }
+    function num(v) { var m = String(v == null ? "" : v).replace(/,/g, "").match(/\d+(?:\.\d+)?/); return m ? +m[0] : 0; }
+    /* this product's own review count: product schema first, then a badge near the title, then the reviews widget.
+       Badges inside carousels, "you may also like" cards or store-wide counters belong to other products. */
+    function reviews() {
+      var h1 = document.querySelector("h1"), hy = h1 ? h1.getBoundingClientRect().top + window.scrollY : 0, cand = [], k = 0;
+      var OTHER = "[class*=carousel], [class*=all-reviews], [class*=medal], [class*=recommend], [class*=related], [class*=upsell], [class*=complementary], [class*=product-card], [class*=card-product], [class*=product-item], [class*=grid-product], [class*=card__], footer, a[href*='/products/']";
+      function other(el) { try { return !!(el.closest && el.closest(OTHER)); } catch (e) { return false; } }
+      function near(el) { var y = el.getBoundingClientRect().top + window.scrollY; return Math.abs(y - hy) < 1400; }
+      function add(el, c, r, app, pri) { if (c === "" || c == null) return; c = num(c); r = num(r); if (c > 5e6) return; cand.push({ c: c, r: r > 0 && r <= 5 ? r : 0, app: app, pri: pri, k: k++ }); }
+      q("script[type='application/ld+json']").forEach(function (s) {
+        var d; try { d = JSON.parse(s.textContent); } catch (e) { return; }
+        (function walk(o, n) {
+          if (!o || typeof o !== "object" || n > 6) return;
+          var t = [].concat(o["@type"] || []).join(" ");
+          if (/Product/.test(t) && o.aggregateRating) add(null, o.aggregateRating.reviewCount || o.aggregateRating.ratingCount, o.aggregateRating.ratingValue, "schema", 0);
+          for (var x in o) if (o[x] && typeof o[x] === "object") walk(o[x], n + 1);
+        })(d, 0);
+      });
+      q("[data-number-of-reviews], [data-raters], [data-reviews-count], [data-review-count]").forEach(function (e) {
+        if (other(e)) return;
+        var c = e.getAttribute("data-number-of-reviews") || e.getAttribute("data-raters") || e.getAttribute("data-reviews-count") || e.getAttribute("data-review-count");
+        var app = e.hasAttribute("data-number-of-reviews") ? "Judge.me" : e.hasAttribute("data-raters") ? "Loox" : "";
+        var widget = /rev-widg|review-widget|reviews-widget/i.test(e.className || "");
+        if (near(e)) add(e, c, e.getAttribute("data-average-rating") || e.getAttribute("data-rating"), app, 1); else if (widget) add(e, c, e.getAttribute("data-average-rating"), app, 2);
+      });
+      q("[class*=review], [class*=Review], [class*=rating], [class*=Rating], [id*=review], [class*=yotpo], [class*=okendo], [class*=oke-], [class*=stamped], [class*=jdgm], [class*=star]").slice(0, 500).forEach(function (e) {
+        if (other(e) || !near(e)) return;
+        var t = it(e); if (!t || t.length > 160) return;
+        var m = t.match(/(\d[\d,]*)\s*\+?\s*(?:verified\s+)?(?:reviews?|ratings?)\b/i), m2 = t.match(/\b([1-5](?:\.\d{1,2})?)\s*(?:\/\s*5|★|stars?)?\s*\((\d[\d,]*)\)/), r = t.match(/\b([1-5](?:\.\d{1,2})?)\s*(?:\/\s*5|out of 5|stars?|★)/i);
+        if (m) add(e, m[1], r ? r[1] : 0, "", 3); else if (m2) add(e, m2[2], m2[1], "", 3);
+      });
+      /* last resort: the block around the product name, e.g. "4.6/5 (10)" with no review class on it */
+      if (h1 && !cand.length) {
+        var box = h1; for (var up = 0; up < 4 && box.parentElement; up++) { box = box.parentElement; if (it(box).length > 220) break; }
+        var bt = it(box).slice(0, 3000), m3 = bt.match(/(\d[\d,]*)\s*\+?\s*(?:verified\s+)?(?:reviews?|ratings?)\b/i), m4 = bt.match(/\b([1-5](?:\.\d{1,2})?)\s*(?:\/\s*5|★|stars?)\s*\|?\s*\(?(\d[\d,]*)\)?/i), r3 = bt.match(/\b([1-5](?:\.\d{1,2})?)\s*(?:\/\s*5|out of 5|stars?|★)/i);
+        if (m3) add(box, m3[1], r3 ? r3[1] : 0, "", 4); else if (m4) add(box, m4[2], m4[1], "", 4);
+      }
+      cand.sort(function (a, b) { return (b.c > 0) - (a.c > 0) || a.pri - b.pri || a.k - b.k; });
+      var best = cand[0] || { c: 0, r: 0, app: "" };
+      var zero = !best.c && /be the first to (?:write a )?review|no reviews yet|write the first review|\b0 reviews\b|reviews \(0\)|hasn.t received any reviews|there are no reviews|^\s*no reviews\s*$/im.test(it(document.body).slice(0, 200000));
+      /* the star histogram (5 down to 1), when the widget shows one: five counts in a row that add up to the review count */
+      var hist = null;
+      if (best.c >= 20) {
+        var body = it(document.body), re = /(?:^|\n)\s*([\d,]+)\s*\n\s*([\d,]+)\s*\n\s*([\d,]+)\s*\n\s*([\d,]+)\s*\n\s*([\d,]+)\s*(?=\n|$)/g, mh;
+        while ((mh = re.exec(body))) {
+          var hv = mh.slice(1, 6).map(num), sum = hv.reduce(function (a, b) { return a + b; }, 0);
+          if (sum && Math.abs(sum - best.c) <= Math.max(2, best.c * 0.03)) { hist = hv[0] >= hv[4] ? hv : hv.slice().reverse(); break; }
+          re.lastIndex = mh.index + 1;
+        }
+      }
+      return { count: best.c, rating: best.c ? best.r : 0, app: best.app, zero: zero, hist: hist };
+    }
+    function apps() {
+      var w = window, a = [];
+      if (w.jdgm || q("[class*=jdgm]").length) a.push("Judge.me");
+      if (w.yotpo || w.yotpoWidgetsContainer || q("[class*=yotpo]").length) a.push("Yotpo");
+      if (w.okeWidgetApi || q("[class*=okendo], [class*=oke-]").length) a.push("Okendo");
+      if (w.loox || q("[class*=loox]").length) a.push("Loox");
+      if (w.StampedFn || q("[class*=stamped]").length) a.push("Stamped");
+      return a;
+    }
+    /* a snapshot of what's on screen; it never changes the page, so it can run as often as needed */
+    var DROP = "header, nav, footer, [role=dialog], [aria-modal=true], [class*=popup], [class*=modal], [class*=drawer], [id*=drawer], [class*=announcement], [class*=cookie], [class*=recommend], [class*=related], [class*=upsell], [class*=complementary], [class*=product-card], [class*=card-product], [class*=product-item], [class*=all-reviews], [class*=carousel]";
+    function snap(why, fin) {
+      if (sent || !document.body) return;
+      if (fin) sent = true;
+      var rv = {}, ap = [], all = "", h1 = "", main = "";
+      try { rv = reviews(); } catch (e) { /* skip */ }
+      try { ap = apps(); } catch (e) { /* skip */ }
+      try { all = it(document.body); var h = document.querySelector("h1"); h1 = h ? it(h).replace(/\s+/g, " ").trim() : ""; } catch (e) { /* skip */ }
+      try {
+        var m = document.querySelector("main, #MainContent, [role=main]") || document.body, hh = document.querySelector("h1"), outer = [];
+        main = it(m);
+        q(DROP).forEach(function (n) { if (m.contains(n) && n !== m && !(hh && n.contains(hh)) && !outer.some(function (o) { return o.contains(n); })) outer.push(n); });
+        outer.forEach(function (n) { var x = it(n); if (x.length > 12) main = main.split(x).join("\n"); });
+      } catch (e) { main = all; }
+      try { parent.postMessage({ type: "troo-live", id: ID, fin: !!fin, why: why, ms: Date.now() - t0, title: document.title, h1: h1, all: all.slice(0, 60000), main: main.slice(0, 40000), rv: rv, apps: ap }, "*"); } catch (e) { /* gone */ }
+    }
+    function tick() {
+      if (sent) return;
+      var de = document.documentElement, H = Math.max(de.scrollHeight || 0, document.body ? document.body.scrollHeight : 0), vh = window.innerHeight || 844;
+      y = Math.min(H, y + 640); window.scrollTo(0, y);
+      var n = it(document.body).length; if (Math.abs(n - last) < 40) calm++; else calm = 0; last = n;
+      if ((y + vh >= H - 10 && calm >= 4) || Date.now() - t0 > 17000) { window.scrollTo(0, 0); setTimeout(function () { snap("done", true); }, 400); return; }
+      if (++ticks % 4 === 0) snap("progress", false);
+      setTimeout(tick, 420);
+    }
+    var ticks = 0;
+    function start() { if (started) return; started = true; setTimeout(tick, 1200); }
+    if (document.readyState === "complete") start(); else { window.addEventListener("load", start); document.addEventListener("DOMContentLoaded", function () { setTimeout(function () { snap("early", false); }, 600); setTimeout(start, 5000); }); }
+    setTimeout(start, 8000);
+    /* some stores' scripts send the frame somewhere else (they read the address as about:srcdoc); keep what was read before it goes */
+    window.addEventListener("pagehide", function (e) { if (e.isTrusted) snap("leaving", true); });
+    window.addEventListener("beforeunload", function (e) { if (e.isTrusted) snap("progress", false); });
+    window.addEventListener("message", function (e) { if (e.data && e.data.type === "troo-live-now" && e.data.id === ID) snap("asked", true); });
+  }
+  /* A/B-test and geo-redirect scripts send the copy to another address (they read it as about:srcdoc); switch them off in the copy */
+  var LIVE_OFF_SRC = /shoplift|intelligems|abconvert|elevateab|visually\.io|convertcdn|cdn-3\.convertexperiments|optimizely|vwo\.com|wingify|redirect|geoip|geolocat|geo-?target|(?:^|[-_./])sso(?:[-_.]|$)|session[-_]bridge|login[-_.]|auth[-_]init/i;
+  var LIVE_OFF_INLINE = /shoplift|intelligems|queueRedirect|_vwo_code|optimizely|geo-?redirect|sso_bridge|sso_continue|page-load-sso/i;
+  function liveDoc(html, id) {
+    html = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi, function (m, attrs, body) {
+      var src = (attrs.match(/\bsrc\s*=\s*["']?([^"'\s>]+)/i) || [])[1] || "";
+      if (src ? LIVE_OFF_SRC.test(src) : LIVE_OFF_INLINE.test(body.slice(0, 2500))) return '<script type="text/plain" data-troo-off="1"></' + "script>";
+      return m;
+    });
+    /* both go first in <head>, before any of the store's scripts */
+    var pre = "<script>(" + livePrelude.toString() + ")();(" + liveCollector.toString() + ")(" + JSON.stringify(id) + ");<\/script>";
+    var hm = /<head\b[^>]*>/i.exec(html);
+    return hm ? html.slice(0, hm.index + hm[0].length) + pre + html.slice(hm.index + hm[0].length) : pre + html;
+  }
+  function liveRead(url) {
+    var base = String(CFG.pageView || "").replace(/\/+$/, ""), t0 = Date.now();
+    if (!base || !win.fetch || CFG.live === false) return Promise.resolve(null);
+    var ctl = win.AbortController ? new AbortController() : null, ta = ctl ? setTimeout(function () { ctl.abort(); }, 15000) : 0;
+    return fetch(base + "?raw=1&url=" + encodeURIComponent(url), { signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(ta); return r.ok ? r.json() : null; })
+      .then(function (v) {
+        if (!v || !v.html || v.html.length < 300) return { ok: false, why: "fetch" };
+        return new Promise(function (res) {
+          var id = "tl" + Math.random().toString(36).slice(2), fr = doc.createElement("iframe"), done = false, tA = 0, tB = 0;
+          var latest = null, tL = 0;
+          function finish(d) {
+            if (done) return; done = true; clearTimeout(tA); clearTimeout(tB); clearTimeout(tL); win.removeEventListener("message", on);
+            try { fr.remove(); } catch (e) { /* gone */ }
+            d = d || latest;
+            res(d && String(d.all || "").length > 200 ? Object.assign({ ok: true, total: Date.now() - t0 }, d) : { ok: false, why: latest ? "left" : "timeout" });
+          }
+          /* progress snapshots are kept; the final one (or the last kept one, if the page leaves or stalls) is the read */
+          function on(e) { if (e.source !== fr.contentWindow) return; var d = e.data; if (!d || d.type !== "troo-live" || d.id !== id) return; clearTimeout(tL); if (!latest || String(d.all || "").length >= String(latest.all || "").length * 0.8) latest = d; if (d.fin) finish(d.why === "leaving" ? latest : d); }
+          win.addEventListener("message", on);
+          fr.setAttribute("sandbox", "allow-scripts");
+          fr.setAttribute("allow", "autoplay 'none'; camera 'none'; microphone 'none'; geolocation 'none'; payment 'none'; fullscreen 'none'");
+          fr.setAttribute("aria-hidden", "true"); fr.setAttribute("title", "Live copy of your page, read in the background"); fr.tabIndex = -1;
+          /* it has to sit inside the viewport (invisible) or the browser pauses it and lazy sections never load */
+          fr.style.cssText = "position:fixed;right:0;bottom:0;width:390px;height:844px;border:0;opacity:0;pointer-events:none;z-index:-1";
+          fr.srcdoc = liveDoc(v.html, id);
+          /* a second "load" means a script sent the copy to another page: keep the last snapshot and stop */
+          var loads = 0; fr.addEventListener("load", function () { if (++loads > 1) { clearTimeout(tL); tL = setTimeout(function () { finish(null); }, 5000); } });
+          doc.body.appendChild(fr);
+          tA = setTimeout(function () { try { fr.contentWindow.postMessage({ type: "troo-live-now", id: id }, "*"); } catch (e) { /* gone */ } }, 24000);
+          tB = setTimeout(function () { finish(null); }, 29000);
+        });
+      })
+      .catch(function () { clearTimeout(ta); return { ok: false, why: "fetch" }; });
+  }
+  win.TrooLive = { read: liveRead };
   function mountReal(v, p) {
     var view = $(".ag-view"), pg = $("[data-ag-page]"); if (!view || !pg) return;
     var W = pg.clientWidth || (view.clientWidth - 70), H = view.clientHeight;
@@ -582,7 +754,9 @@
     R.price = first("[class*=price]", function (el) { var t = tx(el); return /\d/.test(t) && t.length < 90; }, 1800);
     R.reviews = first("[class*=rating], [class*=review], [class*=stars], [class*=jdgm], [class*=yotpo], [class*=loox], [class*=okendo], [class*=stamped]", null, 1800);
     R.details = first("variant-radios, variant-selects, fieldset, select[name*=ption], [class*=variant], [class*=swatch], [class*=option]", null, 2000);
-    R.trust = first("[class*=trust], [class*=badge], [class*=usp], [class*=icon-with-text], [class*=guarantee], [class*=delivery], [class*=shipping]", function (el) { return tx(el).length < 300; }, 2600);
+    var TRUSTW = /return|exchange|deliver|ship|cod\b|cash on|genuine|authentic|warrant|secure|guarantee|free|certified|made in|cruelty|dermat/i;
+    R.trust = first("[class*=trust], [class*=usp], [class*=icon-with-text], [class*=guarantee], [class*=delivery], [class*=shipping]", function (el) { var t = tx(el); return t.length > 3 && t.length < 300; }, 2600) ||
+      first("[class*=badge], [class*=benefit], [class*=feature]", function (el) { var t = tx(el); return t.length < 300 && TRUSTW.test(t); }, 2600);
     R.img = first("main img, img", function (el) { var r = el.getBoundingClientRect(); return r.width > 180 && r.height > 140; }, 1600);
     R.content = first("[class*=description], .rte, [class*=accordion]", function (el) { return tx(el).length > 40; }) || first("main h2");
     R.footer = first("footer") || first("[class*=footer]");
@@ -597,18 +771,37 @@
     var x = b.left * s, y = b.top * s, w = Math.min(b.width * s, W - 74 - Math.max(0, x)), h = Math.min(b.height * s, H * 0.8);
     return { x: Math.max(0, x), y: y, w: Math.max(20, w), h: Math.max(14, h), W: W, H: H };
   }
-  function scrollToRegion(name, cb) {
-    if (!RV || !RV.els[name]) { if (cb) cb(); return; }
-    var w = RV.win, viewH = RV.H / RV.scale, b = RV.els[name].getBoundingClientRect();
-    var from = w.scrollY, docTop = b.top + from;
-    var inView = b.top > 30 && b.top + Math.min(b.height, viewH * 0.5) < viewH - 30;
-    if (inView) { if (cb) cb(); return; }
-    var to = Math.max(0, docTop - viewH * 0.28), t0 = performance.now(), dur = REDUCED ? 0 : 280;
-    (function step(now) {
-      var k = dur ? Math.min(1, (now - t0) / dur) : 1, e = 1 - Math.pow(1 - k, 3);
-      w.scrollTo(0, from + (to - from) * e); placePins();
-      if (k < 1) win.requestAnimationFrame(step); else if (cb) cb();
-    })(t0);
+  /* ---------- camera: one smooth, eased scroll at a time; the agent's cursor glides in step with it ---------- */
+  var CAM = { q: Promise.resolve(), at: {} };
+  function easeIO(k) { return k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; }
+  function camPlan(name) {
+    if (!RV || !RV.els[name]) return null;
+    var w = RV.win, viewH = RV.H / RV.scale, b = RV.els[name].getBoundingClientRect(), from = w.scrollY;
+    var maxY = Math.max(0, Math.max(RV.doc.documentElement.scrollHeight || 0, RV.doc.body ? RV.doc.body.scrollHeight : 0) - viewH);
+    var inView = b.top > viewH * 0.06 && b.top + Math.min(b.height, viewH * 0.45) < viewH * 0.9;
+    var to = inView ? from : Math.min(maxY, Math.max(0, b.top + from - viewH * 0.26)), dy = Math.abs(to - from) * RV.scale;
+    return { from: from, to: to, dur: REDUCED || dy < 3 ? 0 : Math.round(Math.min(1700, 520 + dy * 0.55)) };
+  }
+  function camRun(pl) {
+    return new Promise(function (res) {
+      if (!pl || !RV) return res();
+      if (!pl.dur) { if (pl.to !== pl.from) RV.win.scrollTo(0, pl.to); placePins(); return res(); }
+      var w = RV.win, t0 = performance.now();
+      (function step(now) {
+        var k = Math.min(1, (now - t0) / pl.dur);
+        w.scrollTo(0, pl.from + (pl.to - pl.from) * easeIO(k)); placePins();
+        if (k < 1) win.requestAnimationFrame(step); else res();
+      })(t0);
+    });
+  }
+  /* back to the top of the page, slowly, when the scan ends */
+  function camTop() {
+    CAM.q = CAM.q.then(function () {
+      if (!RV) return;
+      var from = RV.win.scrollY, dy = from * RV.scale;
+      return camRun({ from: from, to: 0, dur: REDUCED || dy < 3 ? 0 : Math.round(Math.min(1900, 600 + dy * 0.45)) });
+    });
+    return CAM.q;
   }
   function placePins() {
     if (!RV) return;
@@ -619,6 +812,9 @@
       pp.el.style.top = (r.y - 9) + "px";
       pp.el.style.opacity = r.y < -10 || r.y > r.H - 10 ? "0" : "";
     });
+    /* highlight boxes stay glued to the part of the page they describe */
+    RV.boxes = (RV.boxes || []).filter(function (bx) { return bx.el.isConnected; });
+    RV.boxes.forEach(function (bx) { var r = realRect(bx.region); if (r) boxAt(bx.el, r); });
   }
   function regionRect(name) {
     if (RV) return realRect(name);
@@ -634,29 +830,65 @@
   function park(id) {
     var fx = $("[data-ag-fx]"), a = AG[id]; if (!fx || !a) return;
     var W = fx.clientWidth, H = fx.clientHeight;
+    delete CAM.at[id];
+    var c = $('[data-cur="' + id + '"]'); if (c) { c.style.transitionDuration = ""; c.style.transitionTimingFunction = ""; }
     moveCur(id, W * a.park[0] - 40, H * a.park[1] - 8);
   }
+  function aim(id, r, spot, dur) {
+    var c = $('[data-cur="' + id + '"]');
+    if (c) { c.style.transitionDuration = Math.max(550, dur || 0) + "ms"; c.style.transitionTimingFunction = dur ? "cubic-bezier(0.65, 0, 0.35, 1)" : ""; }
+    moveCur(id, r.x + r.w * spot[0], r.y + Math.min(r.h * 0.6, 22 + spot[1] * Math.max(0, r.h - 30)));
+  }
+  /* Move one agent to a region. Moves queue up, so the page never jumps between two places at once.
+     Agents working in the background go back to the rail while the camera moves. */
   function goTo(id, region, jitter) {
-    if (RV) { scrollToRegion(region, function () { goTo2(id, region, jitter); }); return true; }
-    return goTo2(id, region, jitter);
+    CAM.q = CAM.q.then(function () {
+      var j = jitter == null ? 0.5 : jitter, spot = [0.25 + 0.5 * Math.random() * j, Math.random()];
+      AGENTS.forEach(function (a) { if (a.id !== id && CAM.at[a.id]) park(a.id); });
+      CAM.at[id] = region;
+      if (!RV) { var r0 = regionRect(region); if (r0) aim(id, r0, spot, 0); return sleep(REDUCED ? 0 : 480); }
+      var pl = camPlan(region), r = realRect(region);
+      if (r && pl) { r.y -= (pl.to - pl.from) * RV.scale; aim(id, r, spot, pl.dur); }
+      return camRun(pl).then(function () { var r2 = realRect(region); if (r2) aim(id, r2, spot, 300); return sleep(pl && pl.dur ? 120 : 260); });
+    });
+    return CAM.q;
   }
-  function goTo2(id, region, jitter) {
-    var r = regionRect(region); if (!r) return null;
-    var j = jitter == null ? 0.5 : jitter;
-    moveCur(id, r.x + r.w * (0.25 + 0.5 * Math.random() * j), r.y + Math.min(r.h * 0.6, 24 + Math.random() * Math.max(0, r.h - 30)));
-    return r;
-  }
+  function boxAt(b, r) { b.style.left = (r.x - 3) + "px"; b.style.top = (r.y - 3) + "px"; b.style.width = (r.w + 6) + "px"; b.style.height = (r.h + 6) + "px"; }
+  function track(b, region) { if (RV) (RV.boxes = RV.boxes || []).push({ el: b, region: region }); }
+  function clearBoxes() { var fx = $("[data-ag-fx]"); if (!fx) return; $$(".ag-box:not(.out)", fx).forEach(function (o) { o.classList.add("out"); setTimeout(function () { o.remove(); }, 450); }); }
   function flash(region, kind, label, color) {
     var r = regionRect(region), fx = $("[data-ag-fx]"); if (!r) return;
-    $$(".ag-box:not(.out)", fx).forEach(function (o) { o.classList.add("out"); setTimeout(function () { o.remove(); }, 450); });
+    clearBoxes();
     var b = doc.createElement("div");
     b.className = "ag-box " + (kind || "");
     if (color) b.style.setProperty("--c", color);
-    b.style.cssText += ";left:" + (r.x - 3) + "px;top:" + (r.y - 3) + "px;width:" + (r.w + 6) + "px;height:" + (r.h + 6) + "px";
+    boxAt(b, r);
     if (label) b.innerHTML = '<span' + (r.y < 26 ? ' class="in"' : "") + ">" + esc(label) + "</span>";
-    fx.appendChild(b);
-    setTimeout(function () { b.classList.add("out"); }, 1300);
-    setTimeout(function () { b.remove(); }, 1800);
+    fx.appendChild(b); track(b, region);
+    setTimeout(function () { b.classList.add("out"); }, 1700);
+    setTimeout(function () { b.remove(); }, 2200);
+  }
+  /* A region under inspection: a soft frame with a scan line running down it, and the latest check written on its tag. */
+  var RNAME = { nav: "Header", title: "Product name", img: "Photos", price: "Price", reviews: "Reviews", details: "Options", cta: "Add to cart", trust: "Trust badges", content: "Details and FAQ", footer: "Footer" };
+  function focusOn(region, color, title, sub) {
+    var r = regionRect(region), fx = $("[data-ag-fx]"); if (!r) return null;
+    clearBoxes();
+    var b = doc.createElement("div");
+    b.className = "ag-box focus";
+    b.style.setProperty("--c", color || "var(--purple-2)");
+    boxAt(b, r);
+    b.innerHTML = '<i class="ag-beam"></i><span class="ag-tag' + (r.y < 30 ? " in" : "") + '"><b>' + esc(title) + "</b><em>" + esc(sub || "") + "</em></span>";
+    fx.appendChild(b); track(b, region);
+    var em = $("em", b);
+    return {
+      line: function (kind, text) { em.className = kind || ""; em.textContent = text; em.style.animation = "none"; void em.offsetWidth; em.style.animation = ""; },
+      done: function () { b.classList.add("out"); setTimeout(function () { b.remove(); }, 500); }
+    };
+  }
+  /* regions in the order they sit on the page, top to bottom */
+  function byPageOrder(list) {
+    return list.map(function (rg, i) { var r = regionRect(rg); return { rg: rg, y: r ? r.y + (RV ? RV.win.scrollY * RV.scale : 0) : 1e6 + i }; })
+      .sort(function (a, b) { return a.y - b.y; }).map(function (x) { return x.rg; });
   }
   /* one pin per region and kind: issues show a running count, tests show their numbers */
   function pin(region, text, kind) {
@@ -769,7 +1001,8 @@
     var gx = S.gx = { t0: Date.now() };
     gx.crawlP = Promise.resolve(null); // search checks come from the entered page itself
     gx.trustP = gapi("/trust", { url: S.url }, 50000);
-    gx.textP = S.viewP.then(function (v) { return v && v.html && win.TrooGrowth ? win.TrooGrowth.pageText(v.html) : null; }).catch(function () { return null; });
+    var staticP = S.viewP.then(function (v) { return v && v.html && win.TrooGrowth ? win.TrooGrowth.pageText(v.html) : null; }).catch(function () { return null; });
+    gx.textP = Promise.all([staticP, Promise.resolve(S.liveP).catch(function () { return null; })]).then(function (x) { return win.TrooGrowth && win.TrooGrowth.mergeLive ? win.TrooGrowth.mergeLive(x[0], x[1]) : x[0]; });
     return gx;
   }
   function growthAfterScan(r) {
@@ -784,7 +1017,8 @@
     gx.shopP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP, shotP]).then(function (x) {
       var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[2] || "", shot = x[3] || "";
       if (!t || !t.main || t.main.length < 300) return null;
-      var text = (prod.desc && t.main.indexOf(prod.desc.slice(0, 40)) < 0 ? prod.desc.slice(0, 1200) + " " : "") + t.main;
+      var text = (prod.desc && t.main.indexOf(prod.desc.slice(0, 40)) < 0 ? prod.desc.slice(0, 1200) + " " : "") + t.main, ex = t.live && t.live.extra;
+      if (ex && t.live.mode === "added") text = text.slice(0, 4400) + " " + ex.slice(0, 1600);
       var sub = win.TrooGrowth.subOf(cat, [p.title, t.h1, prod.title, prod.type].join(" "));
       var i0 = t.h1 ? t.main.indexOf(t.h1.slice(0, 40)) : -1, first = t.main.slice(Math.max(0, i0 - 200), Math.max(0, i0 - 200) + 700);
       var rt = p.rating && p.rating.value ? p.rating : tr.reviews && tr.reviews.schema ? tr.reviews.schema : null;
@@ -842,6 +1076,7 @@
     S.running = true; S.psi = null; S.comps = []; S.report = null; S.saved = false; S.saveState = ""; feedN = 0;
     show("scan");
     S.viewP = fetchView(S.url);
+    S.liveP = liveRead(S.url);
     S.viewReady = new Promise(function (res) { S._viewRes = res; });
     S.croP = S.viewP.then(function (v) { return v && v.html ? measureCro(v.html) : null; });
     S.sideTxt = ""; S.sideMain = "";
@@ -852,6 +1087,11 @@
     buildStages();
     warmStart();
     S.viewP.then(function (v) { if (v && v.html && S.running) mountReal(v); else viewDone(false); });
+    S.liveP.then(function (L) {
+      if (!S.running) return;
+      if (L && L.ok) addFeed("act", "Ran your page's own scripts in a sealed copy", "Read what the store draws with JavaScript" + (L.rv && L.rv.count ? ": " + L.rv.count.toLocaleString("en-IN") + " reviews" + (L.rv.rating ? " at " + L.rv.rating + "★" : "") : ""), "", "reader");
+      else addFeed("info", "Your page's scripts didn't run here", "Anything it draws with JavaScript, like a reviews widget, is marked \u201ccouldn't load\u201d and left out of the score", "", "reader");
+    });
     $("[data-s-done]").hidden = true;
     $("[data-s-status]").textContent = "Scanning"; $("[data-s-status]").classList.add("live");
     $("[data-s-verb]").textContent = "Reading"; $("[data-ag-canvas]").classList.remove("is-done"); $(".ag-livepill").lastChild.textContent = "Live";
@@ -897,7 +1137,6 @@
     curAgent = "speed";
     stage("speed", "run");
     think("speed", ["Loading your page on a mid-range phone", "Timing the largest image and headline", "Counting scripts that block taps", "Waiting for Google PageSpeed"]);
-    goTo("speed", "img");
     addFeed("act", "Started Google PageSpeed on mobile", "Runs in the background while the others work", "", "speed");
     var nComp = (S.inputs.competitors || []).length;
     stage("compare", "run");
@@ -907,10 +1146,12 @@
     /* 2. Reader maps the structure */
     curAgent = "reader";
     stage("structure", "run", "Mapping header, product and footer");
-    var walk = [["nav", "Header and menu"], ["title", (p.h1 && p.h1.length) ? plural(p.h1.length, "H1 heading") : "No H1 heading"], ["img", plural((p.images && p.images.total) || 0, "image")], ["cta", "Main button: " + (p.primaryCta || "none found")], ["footer", "Footer"]];
+    var walkL = { nav: "Header and menu", title: (p.h1 && p.h1.length) ? plural(p.h1.length, "H1 heading") : "No H1 heading", img: plural((p.images && p.images.total) || 0, "image"), cta: "Main button: " + (p.primaryCta || "none found"), footer: "Footer" };
+    var walk = byPageOrder(["nav", "title", "img", "cta", "footer"]);
     for (var w = 0; w < walk.length; w++) {
-      goTo("reader", walk[w][0]); await sleep(330);
-      flash(walk[w][0], "map", walk[w][1], AG.reader.c); await sleep(260);
+      if (walk[w] === "footer") continue;
+      await goTo("reader", walk[w]);
+      flash(walk[w], "map", walkL[walk[w]], AG.reader.c); await sleep(REDUCED ? 100 : 620);
     }
     stage("structure", "done", [PAGE_TYPE[p.pageType] || "Page", plural(p.words || 0, "word"), plural((p.images && p.images.total) || 0, "image")].join(" · "));
     addFeed("act", "Mapped the page", [PAGE_TYPE[p.pageType] || "Page", plural(p.words || 0, "word"), plural((p.images && p.images.total) || 0, "image"), p.platform].filter(Boolean).join(" · "), "");
@@ -918,10 +1159,10 @@
 
     /* 3. Reader reads the business */
     stage("business", "run", "Working out what you sell");
-    goTo("reader", "price"); await sleep(420);
+    await goTo("reader", "price");
     var bizLine = [p.category || "Category not detected", p.aovBand ? bandLabel(p.aovBand) : p.aov ? money(p.aov, p.currency) : "", p.platform].filter(Boolean).join(" · ");
     flash("price", "map", p.aov ? "Typical price " + money(p.aov, p.currency) : "Prices", AG.reader.c);
-    await sleep(500);
+    await sleep(REDUCED ? 100 : 700);
     stage("business", "done", bizLine);
     addFeed("act", "Read the business", bizLine, "");
 
@@ -939,24 +1180,34 @@
     var checks = (r.checks || []).filter(function (c) { return !/^SIG-(MOB|A11Y)/.test(c.signal); });
     stage("signals", "run", "0 of " + checks.length + " checks");
     addFeed("act", "Running " + plural(checks.length, "conversion check"), "Each one comes from the TrooCRO signal library", "");
-    for (var i = 0; i < checks.length; i++) {
-      var c = checks[i], s = lib.signals[c.signal] || {}, reg = regionFor(c.key);
-      var short = SHORT[c.key] || tidy(s.name) || c.key;
-      setAgent("conv", null, "Checking " + (i + 1) + " of " + checks.length + ": " + (tidy(s.name) || short));
-      goTo("conv", reg);
-      await sleep(REDUCED ? 120 : 300);
-      if (c.status === "fail") {
-        tally.fix++;
-        flash(reg, "bad", short);
-        pin(reg, "!", "bad");
-        addFeed("fail", short, c.evidence, barrierChips(s.barriers, lib, 2));
-      } else {
-        tally.pass++;
-        flash(reg, "ok", clip2(c.evidence, 46));
-        addFeed("pass", clip2(c.evidence, 90), "", "");
+    /* one region at a time, top to bottom: the camera stops, a scan line runs over the region, its checks land on the tag */
+    var grp = {}; checks.forEach(function (c) { var rg = regionFor(c.key); (grp[rg] = grp[rg] || []).push(c); });
+    var gOrder = byPageOrder(Object.keys(grp)), per = REDUCED ? 120 : Math.max(280, Math.min(520, Math.round(17000 / Math.max(1, checks.length)))), ci = 0;
+    for (var gi = 0; gi < gOrder.length; gi++) {
+      var reg = gOrder[gi], gl = grp[reg];
+      setAgent("conv", null, (RNAME[reg] || "Page") + ": " + plural(gl.length, "check"));
+      await goTo("conv", reg);
+      var fc = focusOn(reg, AG.conv.c, RNAME[reg] || "Page", "Reading " + plural(gl.length, "check"));
+      await sleep(REDUCED ? 0 : 380);
+      for (var i = 0; i < gl.length; i++) {
+        var c = gl[i], s = lib.signals[c.signal] || {};
+        var short = SHORT[c.key] || tidy(s.name) || c.key;
+        ci++;
+        setAgent("conv", null, "Checking " + ci + " of " + checks.length + ": " + (tidy(s.name) || short));
+        if (c.status === "fail") {
+          tally.fix++;
+          if (fc) fc.line("bad", short);
+          pin(reg, "!", "bad");
+          addFeed("fail", short, c.evidence, barrierChips(s.barriers, lib, 2));
+        } else {
+          tally.pass++;
+          if (fc) fc.line("ok", clip2(c.evidence, 46));
+          addFeed("pass", clip2(c.evidence, 90), "", "");
+        }
+        updTally();
+        await sleep(per);
       }
-      updTally();
-      await sleep(checks.length > 16 ? 230 : 320);
+      if (fc) fc.done();
     }
     var conv = r.conversion || {};
     stage("signals", "done", checks.length ? conv.passed + " passed, " + conv.failed + " to fix" : "Not enough page content to check");
@@ -967,13 +1218,18 @@
     var bHit = {}, bReg = {};
     checks.forEach(function (c) { if (c.status !== "fail") return; var s = lib.signals[c.signal] || {}; (s.barriers || []).forEach(function (b) { bHit[b] = (bHit[b] || 0) + 1; if (!bReg[b]) bReg[b] = regionFor(c.key); }); });
     var bIds = Object.keys(bHit).sort(function (a, b) { return bHit[b] - bHit[a]; });
-    for (var bi = 0; bi < Math.min(bIds.length, 5); bi++) {
-      var bid = bIds[bi], bx = lib.barriers[bid];
-      setAgent("barrier", null, bid + (bx ? " " + tidy(bx.name) : "") + ": " + plural(bHit[bid], "issue"));
-      goTo("barrier", bReg[bid]); await sleep(300);
-      flash(bReg[bid], "bar", bid + (bx ? " " + tidy(bx.name) : ""), AG.barrier.c);
-      $("[data-t-bar]").textContent = String(bi + 1);
-      await sleep(360);
+    var bTop = bIds.slice(0, 5), bRegs = byPageOrder(bTop.map(function (b) { return bReg[b]; }).filter(function (x, k, A) { return A.indexOf(x) === k; }));
+    var bShown = 0;
+    for (var bi = 0; bi < bRegs.length; bi++) {
+      var here = bTop.filter(function (b) { return bReg[b] === bRegs[bi]; });
+      await goTo("barrier", bRegs[bi]);
+      for (var bj = 0; bj < here.length; bj++) {
+        var bid = here[bj], bx = lib.barriers[bid];
+        setAgent("barrier", null, bid + (bx ? " " + tidy(bx.name) : "") + ": " + plural(bHit[bid], "issue"));
+        flash(bRegs[bi], "bar", bid + (bx ? " " + tidy(bx.name) : ""), AG.barrier.c);
+        $("[data-t-bar]").textContent = String(++bShown);
+        await sleep(REDUCED ? 120 : 760);
+      }
     }
     $("[data-t-bar]").textContent = String(bIds.length);
     stage("barriers", "done", bIds.length ? plural(bIds.length, "barrier") + ": " + bIds.slice(0, 3).join(", ") : "No barrier tags on the failed checks");
@@ -983,12 +1239,12 @@
     curAgent = "search";
     stage("search", "run", "Reading robots.txt, sitemap and schema");
     var ai = r.ai || {};
-    goTo("search", "nav"); await sleep(380);
-    flash("nav", "map", "Meta tags and schema", AG.search.c); await sleep(320);
+    await goTo("search", "nav");
+    flash("nav", "map", "Meta tags and schema", AG.search.c); await sleep(REDUCED ? 100 : 700);
     (ai.checks || []).forEach(function (x) { if (!x.pass) addFeed("fail", x.label, x.detail || "", ""); });
     var aiFails = (ai.checks || []).filter(function (x) { return !x.pass; });
-    if (aiFails.length) { goTo("search", "title"); await sleep(320); flash("title", "bad", aiFails[0].label); pin("nav", "AI", "warn"); }
-    await sleep(300);
+    if (aiFails.length) { await goTo("search", "title"); flash("title", "bad", aiFails[0].label); pin("nav", "AI", "warn"); }
+    await sleep(REDUCED ? 100 : 600);
     stage("search", "done", "Search and AI " + (ai.readiness != null ? ai.readiness : "n/a") + "/100, agents " + (ai.agent && ai.agent.score != null ? ai.agent.score : "n/a") + "/100");
     addFeed("act", "Search and AI readiness " + (ai.readiness != null ? ai.readiness + "/100" : "n/a"), (ai.checks || []).filter(function (x) { return x.pass; }).length + " of " + (ai.checks || []).length + " checks pass", "");
 
@@ -1005,6 +1261,7 @@
     var psi = await psiP;
     clearTimeout(skipTimer);
     sweep(false);
+    await goTo("speed", "img");
     S.psi = psi;
     if (psi) {
       (psi.findings || []).filter(function (f) { return f.area === "speed"; }).forEach(function (f) { var s = lib.signals[f.signal] || {}; addFeed("fail", tidy(s.name) || "Speed", f.evidence, ""); });
@@ -1021,23 +1278,23 @@
     /* 8. Access agent */
     curAgent = "a11y";
     stage("a11y", "run", "Checking alt text, labels and contrast");
-    goTo("a11y", "img"); await sleep(380);
+    await goTo("a11y", "img");
     if (psi && psi.scores.accessibility != null) {
       (psi.findings || []).filter(function (f) { return f.area === "accessibility"; }).slice(0, 3).forEach(function (f) { var s = lib.signals[f.signal] || {}; addFeed("fail", tidy(s.name) || "Accessibility", f.evidence, ""); });
       flash("img", psi.scores.accessibility >= 85 ? "ok" : "bad", "Accessibility " + psi.scores.accessibility + "/100");
-      await sleep(400);
+      await sleep(REDUCED ? 100 : 800);
       stage("a11y", "done", "Accessibility " + psi.scores.accessibility + "/100 (Google Lighthouse)");
     } else {
       var lt2 = r.lite || {};
       if (lt2.a11yIssues && lt2.a11yIssues.length) { flash("img", "bad", lt2.a11yIssues[0]); addFeed("fail", "Accessibility gaps in the page's code", lt2.a11yIssues.slice(0, 3).join(", ") + ".", ""); }
       else flash("img", "ok", "No obvious gaps in the code");
-      goTo("a11y", "cta"); await sleep(400);
+      await sleep(REDUCED ? 100 : 700); await goTo("a11y", "cta");
       stage("a11y", "est", "Estimated from the page's code: " + (lt2.a11yEstimate != null ? lt2.a11yEstimate + "/100" : "n/a"));
     }
 
     /* 9. Market agent reports in */
     curAgent = "market";
-    goTo("market", "price");
+    await goTo("market", "price");
     var comps = await compP;
     S.comps = comps;
     await sleep(400);
@@ -1085,12 +1342,13 @@
     for (var ti = 0; ti < T.length; ti++) {
       var reg2 = regionFor(T[ti].f.key);
       setAgent("plan", null, "Test " + (ti + 1) + ": " + clip2(T[ti].title, 60));
-      goTo("plan", reg2); await sleep(380);
+      await goTo("plan", reg2);
       flash(reg2, "plan", "Test " + (ti + 1), AG.plan.c);
       pin(reg2, String(ti + 1), "test");
       addFeed("act", "Test " + (ti + 1) + ": " + clip2(T[ti].title, 90), T[ti].where || "", "");
-      await sleep(320);
+      await sleep(REDUCED ? 120 : 700);
     }
+    clearBoxes(); camTop();
     stage("plan", "done", T.length ? plural(T.length, "test") + " planned, starting " + fmtDate(nextMonday(new Date())) : "Nothing urgent to test");
     clearInterval(tickT);
     $("[data-s-status]").textContent = "Done"; $("[data-s-status]").classList.remove("live");
@@ -1686,8 +1944,8 @@
     return x;
   }
 
-  var LEVER_NAME = { shoppers: "Shoppers", proof: "Proof on the page", rules: "House rules", clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", flow: "Focus & flow", speed: "Speed on phone", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
-  var PILLAR_WHAT = { shoppers: "4 personas picked for this brand read the page and say how likely they are to buy", proof: "Tests, certificates, verified reviews, results, review volume and specs a shopper can check; known premium brands carry it by name", rules: "8 hard facts: price, policies, first screen, reviews, delivery, returns, stock, no fake pressure", clarity: "What it is, who it suits, what it does", trust: "Reviews, returns, proof, and no contradictions", price: "Total cost, delivery date, COD/UPI, offer", flow: "Layout on a phone, ad match, accessibility", speed: "Core Web Vitals and PageSpeed on a phone", discover: "Brings visitors, doesn't convert them", aov: "Grows the order after the decision", retain: "Happens after the first order" };
+  var LEVER_NAME = { shoppers: "Customer voice", proof: "Proof on the page", rules: "House rules", clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", flow: "Focus & flow", speed: "Speed on phone", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
+  var PILLAR_WHAT = { shoppers: "4 personas picked for this brand read the page and say how likely they are to buy (70%), plus what past buyers say in reviews (30%)", proof: "Tests, certificates, results and specs a shopper can check; known premium brands carry it by name", rules: "8 hard facts: price, policies, first screen, reviews, delivery, returns, stock, no fake pressure", clarity: "What it is, who it suits, what it does", trust: "Reviews, returns, proof, and no contradictions", price: "Total cost, delivery date, COD/UPI, offer", flow: "Layout on a phone, ad match, accessibility", speed: "Core Web Vitals and PageSpeed on a phone", discover: "Brings visitors, doesn't convert them", aov: "Grows the order after the decision", retain: "Happens after the first order" };
   function compute(R) {
     var areas = [];
     rescore(R);
@@ -1880,9 +2138,9 @@
     var h = (G.plan ? '<p class="rp-plan-line" data-plan-line hidden></p>' : "") + '<div class="rp-subs">' + tile("CRO score", C.cro, C.croW, false, "cro") + tile("Speed score", C.speed, C.speedW, sp.some(function (a) { return a.est; }), "speed") + "</div>";
     h += '<details class="rp-how rp-wt"><summary>How this score works</summary><table class="rp-wtab"><thead><tr><th>Part</th><th>Score</th><th>Weight</th></tr></thead><tbody>';
     h += '<tr class="grp"><td>CRO score</td><td class="pv">' + (C.cro == null ? "n/a" : C.cro) + '</td><td class="pc">' + C.croW + "%</td></tr>" + C.areas.filter(function (a) { return a.grp === "cro"; }).map(row).join("") +
-      (G.mix != null ? row({ name: "On the benchmark scale", src: "Weighted mix " + G.mix + ", placed on the scale our graded pages set: weak pages 30-55, good brands 70-80, the best 85-90", v: C.cro, w: null }) : "");
+      (G.mix != null ? row({ name: "On the benchmark scale", src: "Weighted mix " + G.mix + ", placed on the scale our graded pages set: bad pages 15-35, mid around 50, good brands 65-80, the best 85-90", v: C.cro, w: null }) : "");
     h += '<tr class="grp"><td>Speed score</td><td class="pv">' + (C.speed == null ? "n/a" : C.speed) + '</td><td class="pc">' + C.speedW + "%</td></tr>" + row({ name: SB.est || SB.perf == null ? "Estimated from the page's code" : "Core Web Vitals and Google PageSpeed (mobile)", src: SB.capped ? "Capped at 50: Google's real-user data rates this page slow" : "Main image time, blocked time and layout shift, plus Lighthouse on a mid-range phone", v: C.speed, w: null, est: SB.est });
-    h += "</tbody></table><p>" + esc("Shoppers: Groq picks the 4 kinds of shopper most likely to land on this page, then each one reads the page the way a real buyer would and says how likely they are to buy. Their scores are weighted by how many shoppers like them you get. A brand they already know needs less proof; an unknown brand has to earn it on the page. Proof: what a careful shopper can check on the page (tests and certificates, verified reviews, results, review volume, specs); household names and well-known premium brands carry it by name. House rules: 8 hard facts we check with scripts. CRO is " + Math.round(100 * ((G.w4 && G.w4.shop) || 0)) + "% shoppers, " + Math.round(100 * ((G.w4 && G.w4.proof) || 0)) + "% proof and " + Math.round(100 * ((G.w4 && G.w4.rules) || 0)) + "% house rules, and the mix is placed on a benchmark scale anchored on product pages the Troopod team graded (weak pages land around 30-55, good brands' pages 70-80, the best 85-90). Speed counts for 15% of the overall score:") +
+    h += "</tbody></table><p>" + esc("Shoppers: Groq picks the 4 kinds of shopper most likely to land on this page, then each one reads the page the way a real buyer would and says how likely they are to buy. Their scores are weighted by how many shoppers like them you get, and reviews from past buyers make up 30% of this customer voice (count, verified buyers, rating; filtered-looking reviews count against it). A brand they already know needs less proof; an unknown brand has to earn it on the page. Proof: what a careful shopper can check on the page besides reviews (tests and certificates, results, specs); household names and well-known premium brands carry it by name. House rules: 8 hard facts we check with scripts. CRO is " + Math.round(100 * ((G.w4 && G.w4.shop) || 0)) + "% customer voice, " + Math.round(100 * ((G.w4 && G.w4.proof) || 0)) + "% proof and " + Math.round(100 * ((G.w4 && G.w4.rules) || 0)) + "% house rules, mixed as a weighted geometric mean so one very weak part pulls the score down, then placed on a benchmark scale anchored on product pages the Troopod team graded (bad pages land around 15-35, mid ones around 50, good brands' pages 65-80, the best 85-90). Speed counts for 15% of the overall score:") +
       ' <span class="rp-formula">Overall = CRO<sup>0.85</sup> × Speed<sup>0.15</sup></span></p></details>';
     return h;
   }

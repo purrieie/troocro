@@ -36,6 +36,25 @@
     return { all: all.slice(0, 120000), main: out.join(" ").slice(0, 20000), h1: h1t };
   }
 
+  /* Add what the live read saw (the page run with its own scripts) to the script-free text.
+     A page that was an empty shell without scripts is read from the live copy instead. */
+  function mergeLive(t, L) {
+    t = t || { all: "", main: "", h1: "" };
+    if (!L || !L.ok || !(L.main || L.all)) { t.live = { ok: false, why: (L && L.why) || "none" }; return t; }
+    var lines = [], seen = {};
+    String(L.main || L.all).split(/\n+/).forEach(function (x) {
+      x = x.replace(/\s+/g, " ").trim(); if (x.length < 2) return;
+      var k = x.toLowerCase().slice(0, 80); if (seen[k]) return; seen[k] = 1;
+      lines.push(/[.!?:]$/.test(x) ? x : x + ".");
+    });
+    var sm = String(t.main || ""), low = sm.toLowerCase(), extra = lines.filter(function (x) { return low.indexOf(x.toLowerCase().slice(0, 50).replace(/\.$/, "")) < 0; }).join(" ");
+    var mode = sm.length < 600 ? "replaced" : extra.length ? "added" : "same";
+    if (mode === "replaced") { t.main = lines.join(" ").slice(0, 20000); t.all = String(L.all || "").replace(/\s+/g, " ").slice(0, 120000) || t.main; }
+    else if (extra) { t.main = (sm + " " + extra).slice(0, 30000); t.all = (String(t.all || "") + " " + extra).slice(0, 140000); }
+    if (!t.h1 && L.h1) t.h1 = L.h1;
+    t.live = { ok: true, mode: mode, extra: extra.slice(0, 6000), added: extra.length, rv: L.rv || null, apps: L.apps || [], ms: L.total || L.ms || 0 };
+    return t;
+  }
   function sentenceAt(t, i, max) {
     var a = i, b = i; max = max || 150;
     while (a > 0 && i - a < max && !/[.!?]\s/.test(t.slice(a - 2, a))) a--;
@@ -443,6 +462,7 @@
     var P = R.page || {}, I = R.inputs || {}, t = (ctx && ctx.text) || { main: "", h1: "" }, prod = (ctx && ctx.trust && ctx.trust.product) || {};
     var cat = I.category || P.category || "Other"; if (!LIB.cats[cat]) cat = "Other";
     if (P.lead) return { cat: "Other", src: "lead" };
+    if (!(I.category && I.catYou) && !P.prices && !P.aov && /401\(k\)|retirement|pension|insurance|\bloans?\b|lending|mutual fund|invest(?:ing|ment)|payroll|software|platform|\bsaas\b|book a demo|request a demo|get a quote|clinic|hospital|consult/i.test([P.title, P.description, P.heroHeadline, P.primaryCta].join(" "))) return { cat: "Other", src: "nonstore" };
     if (I.category && I.catYou) return { cat: cat, src: "you" };
     var strong = [prod.title, prod.type, (prod.tags || []).join(" "), t.h1, P.title].join(" "), weak = String(t.main || "").slice(0, 1000);
     var best = null, bestN = 0, cur = 0, curS = 0, bestS = 0;
@@ -459,10 +479,12 @@
      CRO = shoppers (4 personas Groq picked for this brand walk the page and say how likely they are to buy)
          + house rules (8 hard facts a script can check). Speed as before. Overall = CRO^0.85 x Speed^0.15. */
   var W4 = { shop: 0.3, proof: 0.5, rules: 0.2 };
-  /* The weighted mix is placed on a benchmark scale anchored on PDPs the Troopod team graded: weak pages (BSC, Bombae,
-     Fableroom) land around 30-55, good brands' pages (Moxie, Pilgrim, Candere, Inde Wild, boAt) around 70-80, the best
-     (Apple, Marshall, BlueStone) 85-90. Monotonic, so the order never changes; only the scale does. */
-  var CAL4 = [[0, 0], [25, 20], [40, 38], [52, 70], [60, 80], [75, 92], [100, 100]];
+  /* The mix is a weighted geometric mean (each part floored at 5), so a page with almost nothing to prove can't hide
+     behind tidy basics. It is then placed on a benchmark scale anchored on 20 PDPs: bad pages (BSC, House of Men,
+     Picklico, Baublelove) land around 15-30, mid ones (Bombae, Dermabay, Fableroom) 40-60, good brands' pages 65-80,
+     the best 85-90.
+     Monotonic, so the order never changes; only the scale does. */
+  var CAL4 = [[0, 0], [25, 15], [35, 30], [46, 48], [50, 66], [60, 80], [72, 90], [100, 100]];
   function cal4(x) { if (x == null) return null; for (var i = 1; i < CAL4.length; i++) { var a = CAL4[i - 1], b = CAL4[i]; if (x <= b[0]) return a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]); } return 100; }
   var RULE_DEF = {
     price: { t: "One clear price", bad: "The price or discount is confusing", region: "price", fix: "Show one price, the MRP it's cut from and one discount. Move the other offers below the button." },
@@ -508,6 +530,8 @@
     }
     /* 4. reviews */
     var rt = P.rating && P.rating.value ? P.rating : tr.reviews && tr.reviews.schema && tr.reviews.schema.value ? tr.reviews.schema : null;
+    var lvr = ctx.text.live && ctx.text.live.ok && ctx.text.live.rv;
+    if (!rt && lvr && lvr.count >= 1 && lvr.rating) rt = { value: lvr.rating, count: lvr.count };
     if (!rt) { var mr = top.match(/\b([1-5](?:\.\d{1,2})?)\s*(?:\/\s*5|out of 5|★|stars?)?\s*[|(·]?\s*(?:from |based on )?([\d,]{1,7})\s*(?:\+\s*)?(?:verified )?(?:reviews|ratings)\b/i); if (mr && +mr[1] >= 1 && +mr[1] <= 5) rt = { value: +mr[1], count: +mr[2].replace(/,/g, "") }; }
     var rv = sh && sh.reviews, cnt = rt ? +(rt.count || 0) : 0;
     var apps = appsOf(R, ctx).reviews, known = sh && sh.brand_known === "household";
@@ -515,11 +539,13 @@
     if (!rt) {
       if (rv && rv.read >= 3) set("reviews", "partly", rv.read + " reviews are on the page but there's no overall rating near the name.");
       else if (known) set("reviews", "na", "A household-name brand. Shoppers don't need reviews to trust it.");
-      else if (apps.length) set("reviews", "na", apps.join(", ") + " draws the reviews with JavaScript, so we couldn't read them.");
+      else if (apps.length && !(lvr && lvr.zero)) set("reviews", "na", "Couldn't load: " + apps.join(", ") + " draws the reviews with JavaScript and they didn't load for our reader, so this rule is left out of the score.");
       else set("reviews", "fail", "No rating or reviews on the page.");
     } else {
       var st = cnt >= 30 ? "pass" : cnt >= 5 || !cnt ? "partly" : "fail", ev = rt.value + "★" + (cnt ? " from " + cnt + " reviews" : "") + ".";
+      var hs = lvr && lvr.hist, perfect = hs && cnt >= 50 && hs[3] + hs[4] === 0 && hs[2] <= cnt * 0.02;
       if (rv && rv.read >= 3 && (rv.about === false || strong.length)) { st = st === "pass" ? "partly" : "fail"; ev += " " + (rv.about === false ? "The reviews shown are about other products, not this one." : cap(strong[0]) + "."); }
+      else if (perfect) { st = st === "pass" ? "partly" : st; ev += " None of them is below 3 stars, which reads as filtered: shoppers trust a few honest bad reviews more than none."; }
       else if (cnt && cnt < 5) ev += " Too few to trust.";
       set("reviews", st, ev);
     }
@@ -550,35 +576,63 @@
     else set("pressure", "pass", "No countdowns or made-up stock numbers.");
     return RULE_ORDER.map(function (k) { return out[k]; });
   }
-  /* Proof on the page: what a careful shopper can actually check. Brand equity counts as proof for household names
-     and well-known premium brands (shoppers already trust them); everyone else has to show it on the page. */
-  var PROOF_RX = /clinical(?:ly)?|\bstud(?:y|ies)\b|volunteers|participants|subjects|dermatologist[- ](?:tested|approved)|lab[- ]tested|third[- ]party|certified|certificate|hallmark|\bbis\b|\bigi\b|\bgia\b|\bisi\b|fssai|\biso\b|\bgmp\b|ayush|patent/gi;
-  var INFO_RX = /how to use|directions|ingredients?|specifications?|dimensions|material|in the box|what.s inside|size chart|care (?:guide|instructions)|battery|playback|playtime|bluetooth|warranty|ipx\d|water[- ]resistant|compatib|purity|carat|karat|\d{2}kt|gold weight|net (?:weight|quantity)|shelf life|weight/gi;
-  function proof4(R, ctx, sh, rules) {
-    var P = R.page || {}, tr = ctx.trust || {}, t = String(ctx.text.main || "") + " " + String((tr.product && tr.product.desc) || ""), it = [], pts = 0;
-    function add(k, ok, n, label) { it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
-    var kinds = {}; (t.match(PROOF_RX) || []).forEach(function (m) { kinds[m.toLowerCase().slice(0, 6)] = 1; });
-    var nk = Object.keys(kinds).length;
-    add("tested", nk, nk >= 2 ? 25 : 12, "Tests, certificates or studies");
-    add("numbers", /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers)|tested on \d+|\d+ (?:volunteers|participants|subjects)/i.test(t), 10, "Results with numbers and a source");
-    add("verified", /verified (?:buyer|purchase|customer|review)|certified buyer/i.test(t), 15, "Verified-buyer reviews");
-    add("results", /\bday 0\b|before\s*(?:&|and|\/)\s*after|\bday \d{1,3}\b.{0,40}\bday \d{1,3}\b/i.test(t), 10, "Before and after results");
-    add("platforms", /(?:nykaa|amazon|flipkart|myntra|google)[^.]{0,40}(?:\d\.\d|rating)/i.test(t), 10, "Ratings on other platforms");
-    var rt = P.rating && P.rating.value ? P.rating : tr.reviews && tr.reviews.schema && tr.reviews.schema.value ? tr.reviews.schema : null, cnt = rt ? +(rt.count || 0) : 0;
+  /* Reviews (v12.5): part of the customer voice, not of proof. Count, verified buyers and rating build it; reviews that look
+     unreliable, or a widget with no reviews below 3 stars at all, pull it down. "Couldn't load" leaves it out. */
+  var REV_W = 0.3;
+  function reviews4(R, ctx, sh) {
+    var P = R.page || {}, tr = ctx.trust || {}, main = String(ctx.text.main || ""), t = main + " " + String((tr.product && tr.product.desc) || ""), it = [], pts = 0;
+    var lv = ctx.text.live || null, lvr = lv && lv.ok ? lv.rv : null;
+    var rt = P.rating && P.rating.value ? P.rating : tr.reviews && tr.reviews.schema && tr.reviews.schema.value ? tr.reviews.schema : null, cnt = rt ? +(rt.count || 0) : 0, rating = rt ? +rt.value || 0 : 0;
+    if (!cnt && lvr && lvr.count >= 1) { cnt = lvr.count; rating = rating || lvr.rating || 0; }
     if (!cnt) { var mr = t.match(/\b([\d,]{2,7})\s*(?:\+\s*)?(?:verified )?(?:reviews|ratings)\b/i); if (mr) cnt = +mr[1].replace(/,/g, ""); }
-    add("volume", cnt >= 30, cnt >= 500 ? 20 : cnt >= 100 ? 15 : 8, cnt ? cnt.toLocaleString("en-IN") + " reviews" : "30+ reviews");
+    if (!cnt) { var h1 = (ctx.text.h1 || "").slice(0, 30), i0 = h1 ? main.indexOf(h1) : -1, mp = (i0 >= 0 ? main.slice(i0, i0 + 600) : main.slice(0, 1500)).match(/\((\d{2,6})\)/); if (mp) cnt = +mp[1]; }
+    if (!cnt && sh && sh.reviews && sh.reviews.read >= 5) cnt = sh.reviews.read;
+    if (!rating && lvr && lvr.rating) rating = lvr.rating;
+    var known = sh && sh.brand_known, tier = sh && sh.price_tier, carry = known === "household" || (known === "well-known" && (tier === "premium" || tier === "luxury"));
+    var rApps = appsOf(R, ctx).reviews.concat((lv && lv.apps) || []).filter(function (x, i, A) { return A.indexOf(x) === i; });
+    var noLoad = !cnt && rApps.length && !(lvr && lvr.zero) && !(sh && sh.reviews && sh.reviews.read >= 3);
+    if (noLoad) return { score: null, noLoad: rApps, items: [{ k: "volume", unk: true, label: "Reviews: couldn't load" }] };
+    if (!cnt && carry) return { score: null, carry: true, items: [] };
+    function add(k, ok, n, label) { it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
+    add("volume", cnt >= 5, cnt >= 500 ? 60 : cnt >= 100 ? 50 : cnt >= 30 ? 35 : 15, cnt ? cnt.toLocaleString("en-IN") + " reviews" : "No reviews");
+    if (cnt) {
+      add("verified", /verified (?:buyer|purchase|customer|review)|certified buyer|customer photos|reviews? with (?:images|photos)|photos? (?:&|and) videos/i.test(t), 25, "Verified buyers or customer photos");
+      if (rating) add("rating", rating >= 4, rating >= 4 ? 15 : 5, rating.toFixed(1).replace(/\.0$/, "") + "★ average");
+    }
+    var rv = sh && sh.reviews, fishy = rv && rv.read >= 3 && (rv.about === false || (rv.fishy || []).some(function (x) { return FISHY.test(x); }));
+    if (fishy) { pts -= 30; it.push({ k: "fishy", ok: false, bad: true, label: rv.about === false ? "Reviews are about other products" : "Reviews look unreliable" }); }
+    var hist = lvr && lvr.hist, perfect = hist && cnt >= 50 && hist[3] + hist[4] === 0 && hist[2] <= cnt * 0.02;
+    if (perfect) { pts -= 30; it.push({ k: "perfect", ok: false, bad: true, label: "None of " + cnt.toLocaleString("en-IN") + " reviews below 3★" }); }
+    return { score: clamp(Math.round(pts), 0, 100), cnt: cnt, rating: rating, hist: hist || null, perfect: !!perfect, fishy: !!fishy, items: it };
+  }
+  /* Proof on the page: what a careful shopper can check besides reviews (tests, certificates, awards, other platforms;
+     specs and materials; results with numbers). Brand equity counts as proof for household names and well-known premium brands. */
+  var PROOF_RX = /clinical(?:ly)?|\b(?:scientific|independent|published|research)\s+stud(?:y|ies)\b|\bstud(?:y|ies)\s+(?:show|shows|showed|found|proves?|confirm(?:s|ed)?)\b|volunteers|participants|dermatologist[- ](?:tested|approved)|lab[- ]tested|third[- ]party|certified|certificate|hallmark|\bbis\b|\bigi\b|\bgia\b|\bisi\b|fssai|\biso\b|\bgmp\b|ayush|patent|award|as seen (?:in|on)|featured in|bee \d|\d[- ]star (?:rated|energy)|organic certified|india organic|usda|great taste|peta|vegan society|oeko|gots/gi;
+  var INFO_RX = /how to (?:use|brew|wear|apply|install)|directions|ingredients?|specifications?|dimensions|material|fabric|cotton|polyester|linen|\bgsm\b|\bfit\b|model (?:is )?wear|size chart|wash|in the box|what.s inside|care (?:guide|instructions)|battery|playback|playtime|bluetooth|warranty|ipx\d|water[- ]resistant|compatib|\brpm\b|\bwatts?\b|bldc|motor|remote|purity|carat|karat|\d{2}kt|silver|brass|plating|gold weight|net (?:weight|quantity|wt)|shelf life|nutrition|calories|protein|servings?|cups? per|origin|sourced|preservative|arabica|thickness|layers?|foam|firmness|trial|weight/gi;
+  function proof4(R, ctx, sh, rules) {
+    var P = R.page || {}, tr = ctx.trust || {}, main = String(ctx.text.main || ""), t = main + " " + String((tr.product && tr.product.desc) || ""), it = [], pts = 0;
+    function add(k, ok, n, label) { it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
+    /* someone else vouches: tests, certificates, awards, other platforms */
+    var kinds = {}; (t.match(PROOF_RX) || []).forEach(function (m) { kinds[m.toLowerCase().slice(0, 6)] = 1; });
+    var plat = /(?:nykaa|amazon|flipkart|myntra|google)[^.]{0,40}(?:\d\.\d|rating)/i.test(t); if (plat) kinds.platfm = 1;
+    var nk = Object.keys(kinds).length;
+    add("tested", nk, nk >= 2 ? 25 : 12, "Tests, certificates, awards or other platforms");
+    /* specifics a shopper can hold you to */
     var info = {}; (t.match(INFO_RX) || []).forEach(function (m) { info[m.toLowerCase().replace(/[^a-z]/g, "").slice(0, 6)] = 1; });
     var ni = Object.keys(info).length;
-    add("info", ni >= 3, ni >= 6 ? 20 : 10, "Specs, ingredients and how-to as text");
-    var rv = sh && sh.reviews, fishy = rv && rv.read >= 3 && (rv.about === false || (rv.fishy || []).some(function (x) { return FISHY.test(x); }));
-    if (fishy) { pts -= 15; it.push({ k: "fishy", ok: false, bad: true, label: "Reviews look unreliable" }); }
+    add("info", ni >= 1, ni >= 6 ? 15 : ni >= 3 ? 10 : 3, "Specs, materials, ingredients or how-to as text");
+    /* results with numbers */
+    add("results", /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers)|tested on \d+|\d+ (?:volunteers|participants|subjects)|\bday 0\b|before\s*(?:&|and|\/)\s*after|(?:trusted by|loved by|over|\d+)\s*[\d.,]+\s*(?:lakh|l\+|k\+|mn|million|crore)?\s*(?:happy )?customers/i.test(t), 20, "Results or customer numbers");
+    var raw = pts * 100 / 60;
     var price = (sh && sh.stock && sh.stock.price) || (tr.product && tr.product.price) || P.aov || 0;
     var minBuy = 0; (t.match(/(?:min(?:imum)?\.? (?:purchase|order)|orders? (?:above|over|worth)|purchase of)\s*(?:of\s*)?(?:rs\.?|₹|inr)?\s?([\d,]{3,6})/gi) || []).forEach(function (m) { var v = +(m.match(/([\d,]{3,6})\s*$/) || [0, "0"])[1].replace(/,/g, ""); if (v > minBuy) minBuy = v; });
     var codes = (t.match(/use code|coupon code|\bcode\s*:?\s*[A-Z0-9]{4,}\b|click to copy|tap to copy/g) || []).length;
-    if (codes >= 2 || (price && minBuy >= 3 * price)) { pts -= 10; it.push({ k: "clutter", ok: false, bad: true, label: price && minBuy >= 3 * price ? "Offers for baskets far above this price" : "Coupon codes crowd the price" }); }
-    var raw = clamp(Math.round(pts), 0, 100), known = sh && sh.brand_known, tier = sh && sh.price_tier;
+    if (codes >= 2 || (price && minBuy >= 3 * price)) { raw -= 20; it.push({ k: "clutter", ok: false, bad: true, label: price && minBuy >= 3 * price ? "Offers for baskets far above this price" : "Coupon codes crowd the price" }); }
+    raw = clamp(Math.round(raw), 0, 100);
+    var known = sh && sh.brand_known, tier = sh && sh.price_tier;
     var carry = known === "household" ? 80 : known === "well-known" && (tier === "premium" || tier === "luxury") ? 75 : 0;
-    return { score: Math.max(raw, carry), raw: raw, carry: carry, known: known || "", tier: tier || "", items: it };
+    var lv = ctx.text.live || null;
+    return { score: Math.max(raw, carry), raw: raw, carry: carry, known: known || "", tier: tier || "", items: it, live: lv ? (lv.ok ? lv.mode : "failed") : "" };
   }
   function shopScore(sh) {
     if (!sh || !sh.personas || !sh.personas.length) return null;
@@ -591,10 +645,12 @@
     var rv = rs.length ? 100 * rs.reduce(function (t, r) { return t + (on["r_" + r.id] ? 1 : r.v); }, 0) / rs.length : null;
     var sw = 0, ss = 0; Mo.shop.forEach(function (p) { sw += p.fit; ss += p.fit * (on["p_" + p.id] ? Math.max(p.buy, p.to) : p.buy); });
     var sv = sw ? ss / sw : null;
+    /* customer voice: the shoppers plus what past buyers say in reviews (30%) */
+    if (Mo.rev != null) sv = sv == null ? Mo.rev : (1 - (Mo.revW || 0.3)) * sv + (Mo.revW || 0.3) * Mo.rev;
     Mo.fixes.forEach(function (f) { if (on[f.id] && LH_W[f.e.t]) fx[f.e.t] = 1; });
-    var pv = Mo.proof == null ? null : on.p_proof ? Math.max(Mo.proof, Mo.proofTo || Mo.proof) : Mo.proof;
+    var pv = Mo.proof == null ? null : Math.max(15, on.p_proof ? Math.max(Mo.proof, Mo.proofTo || Mo.proof) : Mo.proof);
     var parts = [[sv, Mo.wS], [pv, Mo.wP], [rv, Mo.wR]].filter(function (x) { return x[0] != null; }), pw = parts.reduce(function (t, x) { return t + x[1]; }, 0);
-    var mix = pw ? parts.reduce(function (t, x) { return t + x[0] * x[1]; }, 0) / pw : null, croX = cal4(mix), cro = croX == null ? null : Math.round(croX);
+    var mix = pw ? Math.exp(parts.reduce(function (t, x) { return t + x[1] * Math.log(Math.max(5, x[0])); }, 0) / pw) : null, croX = cal4(mix), cro = croX == null ? null : Math.round(croX);
     var spd = speedOf(Mo.sp, fx);
     var x = cro == null ? null : spd == null ? cro : Math.exp(0.85 * Math.log(Math.max(5, croX)) + 0.15 * Math.log(Math.max(5, spd)));
     var overall = cro == null ? null : spd == null ? cro : Math.round(Math.exp(0.85 * Math.log(Math.max(5, cro)) + 0.15 * Math.log(Math.max(5, spd))));
@@ -605,7 +661,7 @@
     var wall = /(access denied|are you a robot|verify you are human|captcha|request (?:was )?blocked|unusual traffic|enable javascript|site can.t be reached|something went wrong|temporarily unavailable|attention required|just a moment)/i;
     var txt = String(t.main || "") + " " + String(P.title || "");
     if (wall.test(txt.slice(0, 600)) && String(t.main || "").length < 2500) return "The site blocked our reader, so we only saw a check page, not the product.";
-    if (String(t.main || "").length < 600 && !(tr.product && tr.product.title)) return "This page builds itself with JavaScript, and our reader only saw an empty shell.";
+    if (String(t.main || "").length < 600) return t.live && t.live.ok ? "We ran the page with its own scripts too, but it still showed almost no text in our reader, so it couldn't load here." : "This page builds itself with JavaScript and it couldn't load in our reader, so we only saw an empty shell.";
     return null;
   }
 
@@ -753,13 +809,14 @@
     var sh = ctx.shop && ctx.shop.personas && ctx.shop.personas.length ? ctx.shop : null;
     var rules = rules4(R, ctx, qs, TR), rApp = rules.filter(function (r) { return r.v != null; });
     var rScore = rApp.length ? Math.round(100 * rApp.reduce(function (t, r) { return t + r.v; }, 0) / rApp.length) : null, sScore = shopScore(sh);
-    var PF = proof4(R, ctx, sh, rules);
-    var missP = PF.items.filter(function (i) { return !i.ok && !i.bad; }).map(function (i) { return i.label.toLowerCase(); });
+    var PF = proof4(R, ctx, sh, rules), RV = reviews4(R, ctx, sh);
+    var vScore = sScore == null ? RV.score : RV.score == null ? sScore : Math.round((1 - REV_W) * sScore + REV_W * RV.score);
+    var missP = PF.items.filter(function (i) { return !i.ok && !i.bad && !i.unk; }).map(function (i) { return i.label.toLowerCase(); });
     var proofTo = PF.carry >= PF.raw ? PF.score : Math.min(100, PF.score + 25);
-    var Mo4 = { v4: true, proof: PF.score, proofTo: proofTo, wP: W4.proof, rules: rules.map(function (r) { return { id: r.id, v: r.v }; }), shop: sh ? sh.personas.map(function (p) { return { id: p.id, fit: p.fit, buy: p.buy, to: p.fix && p.fix.to != null ? p.fix.to : p.buy }; }) : [], wS: W4.shop, wR: W4.rules, sp: Mo.sp, fixes: [] };
+    var Mo4 = { v4: true, proof: PF.score, proofTo: proofTo, wP: W4.proof, rev: RV.score, revW: REV_W, rules: rules.map(function (r) { return { id: r.id, v: r.v }; }), shop: sh ? sh.personas.map(function (p) { return { id: p.id, fit: p.fit, buy: p.buy, to: p.fix && p.fix.to != null ? p.fix.to : p.buy }; }) : [], wS: W4.shop, wR: W4.rules, sp: Mo.sp, fixes: [] };
     var fx4 = [];
     rules.forEach(function (r) { if (r.st === "fail" || r.st === "partly") fx4.push({ id: "r_" + r.id, kind: "cro", pillar: "rules", t: r.bad, ev: r.ev, fix: r.fix, sev: r.st === "fail" ? "Must solve" : "Should solve", partly: r.st === "partly", region: r.region, e: { t: "rule" } }); });
-    if (PF.score < 60 && missP.length) fx4.push({ id: "p_proof", kind: "cro", pillar: "proof", t: "Show proof shoppers can check", ev: "Missing: " + missP.slice(0, 4).join(", ") + ".", fix: "Add what this product can prove: test or certificate results with numbers, verified-buyer reviews with photos, before and after, ratings from Nykaa or Amazon.", sev: PF.score < 35 ? "Must solve" : "Should solve", region: "reviews", e: { t: "proof" } });
+    if (PF.score < 60 && missP.length) fx4.push({ id: "p_proof", kind: "cro", pillar: "proof", t: "Show proof shoppers can check", ev: "Missing: " + missP.slice(0, 4).join(", ") + ".", fix: "Add what this product can prove: test or certificate results with numbers, before and after, specs and materials as text, ratings from Nykaa or Amazon.", sev: PF.score < 35 ? "Must solve" : "Should solve", region: "reviews", e: { t: "proof" } });
     (sh ? sh.personas : []).forEach(function (p) { if (p.fix && p.fix.change && p.fix.to > p.buy) fx4.push({ id: "p_" + p.id, kind: "cro", pillar: "shoppers", t: cap(p.fix.change), ev: p.n + ": “" + (p.leave || "") + "”", fix: "", sev: p.fit >= 30 ? "Must solve" : "Should solve", region: "content", e: { t: "persona" } }); });
     var sp4 = plan.speed;
     Mo4.fixes = fx4.concat(sp4).map(function (f) { return { id: f.id, e: f.e }; });
@@ -773,9 +830,9 @@
       defaultOn: fx4.concat(sp4).filter(function (f) { return f.gain > 0; }).sort(byG4).slice(0, 3).map(function (f) { return f.id; }), vit: plan.vit, est: plan.est };
     res.score = b4.overall; res.cro = b4.cro; res.speed = b4.speed; res.croW = 85; res.speedW = 15;
     res.top3 = res.plan.defaultOn.length ? { from: b4.overall, to: project4(Mo4, res.plan.defaultOn).overall } : null;
-    var wsum = (sScore == null ? 0 : W4.shop) + W4.proof + (rScore == null ? 0 : W4.rules), wOf = function (w) { return Math.round(850 * w / wsum) / 10; };
-    res.parts = [{ id: "shoppers", w: wOf(W4.shop), v: sScore, grp: "cro" }, { id: "proof", w: wOf(W4.proof), v: PF.score, grp: "cro" }, { id: "rules", w: wOf(W4.rules), v: rScore, grp: "cro" }, { id: "speed", w: 15, v: b4.speed, est: !!B.speed.est, grp: "speed" }].filter(function (p) { return p.v != null; });
-    res.mix = b4.P.mix; res.scoreV = 4; res.rules = rules; res.rulesScore = rScore; res.shop = sh; res.shopScore = sScore; res.proof = PF; res.w4 = { shop: sScore == null ? 0 : W4.shop / wsum, proof: W4.proof / wsum, rules: rScore == null ? 0 : W4.rules / wsum };
+    var wsum = (vScore == null ? 0 : W4.shop) + W4.proof + (rScore == null ? 0 : W4.rules), wOf = function (w) { return Math.round(850 * w / wsum) / 10; };
+    res.parts = [{ id: "shoppers", w: wOf(W4.shop), v: vScore, grp: "cro" }, { id: "proof", w: wOf(W4.proof), v: PF.score, grp: "cro" }, { id: "rules", w: wOf(W4.rules), v: rScore, grp: "cro" }, { id: "speed", w: 15, v: b4.speed, est: !!B.speed.est, grp: "speed" }].filter(function (p) { return p.v != null; });
+    res.mix = b4.P.mix; res.scoreV = 4; res.rules = rules; res.rulesScore = rScore; res.shop = sh; res.shopScore = sScore; res.voice = vScore; res.reviews = RV; res.revW = REV_W; res.proof = PF; res.w4 = { shop: vScore == null ? 0 : W4.shop / wsum, proof: W4.proof / wsum, rules: rScore == null ? 0 : W4.rules / wsum };
     if (sh) { if (sh.one_liner) res.one = { text: sh.one_liner, src: "ai" }; if (sh.product) res.product = sh.product; if (sh.buyer) res.buyer = sh.buyer; res.brandKnown = sh.brand_known; }
     res.unread = unreadOf(R, ctx);
     if (res.unread) { res.score = null; res.cro = null; res.parts = []; }
@@ -796,14 +853,19 @@
   }
   function rShort(G, R) {
     if (!G || G.scoreV !== 4) return "";
-    if (G.unread) return '<section class="rp-sec sh-unread" id="rp-shoppers">' + head("We couldn't read this page", "No score for this page", esc(G.unread) + " Scoring an empty or blocked page would be wrong, so we haven't. Try the brand's own product URL, or a page that loads without a login or check screen.") + "</section>";
-    var sh = G.shop, h = "", Pl = G.plan;
+    if (G.unread) return '<section class="rp-sec sh-unread" id="rp-shoppers">' + head("We couldn't read this page", "No score for this page", esc(G.unread) + " Scoring a page we couldn't load would be wrong, so we haven't. Try the brand's own product URL, or a page that loads without a login or check screen.") + "</section>";
+    var sh = G.shop, h = "", Pl = G.plan, RVW = G.reviews || null, vw = Math.round(100 * ((G.w4 && G.w4.shop) || 0.3));
+    /* reviews: what past buyers say, part of the customer voice */
+    var rvRow = RVW ? '<div class="cv-rev"><b>Reviews' + (RVW.score != null ? " " + RVW.score + "/100" : "") + "</b>" +
+      (RVW.items.length ? '<div class="pf-row">' + RVW.items.map(function (i) { return '<span class="pf-i ' + (i.bad ? "bad" : i.ok ? "ok" : i.unk ? "unk" : "no") + '"' + (i.unk ? ' title="Loaded with JavaScript and didn\'t load for our reader"' : "") + "><i>" + (i.bad ? "✕" : i.ok ? "✓" : i.unk ? "?" : "–") + "</i>" + esc(i.label) + "</span>"; }).join("") + "</div>" : "") +
+      (RVW.noLoad ? '<p class="pf-note">Reviews on this page load with JavaScript (' + esc(RVW.noLoad.join(", ")) + ") and didn't load for our reader, so they're left out of the score instead of counted as missing.</p>" : RVW.carry ? '<p class="pf-note">No reviews on the page, but shoppers already know the brand, so they\'re left out.</p>' : RVW.hist ? '<p class="pf-note">Stars, 5 to 1: ' + RVW.hist.map(function (n) { return n.toLocaleString("en-IN"); }).join(" · ") + ".</p>" : "") + "</div>" : "";
+    var vSub = (G.shopScore != null ? "Shoppers " + G.shopScore + "/100" : "") + (RVW && RVW.score != null ? (G.shopScore != null ? ", reviews " + RVW.score + "/100 (" + Math.round(100 * (G.revW || 0.3)) + "%)" : "Reviews " + RVW.score + "/100") : "") + (G.voice != null ? ": customer voice " + G.voice + "/100, " + vw + "% of the CRO score." : ".");
     if (sh && sh.personas && sh.personas.length) {
       var rv = sh.reviews || {};
-      h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Shoppers", "4 shoppers walked your page", "Picked for who buys " + esc(clip(G.product || "this product", 60)) + ". Each read the page and said how likely they are to buy, weighted by how many shoppers like them you get: " + G.shopScore + "/100, " + Math.round(100 * ((G.w4 && G.w4.shop) || 0.35)) + "% of the CRO score.") +
-        '<div class="sh-grid">' + sh.personas.map(rCard).join("") + "</div>" +
+      h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Customer voice", "4 shoppers walked your page", "Picked for who buys " + esc(clip(G.product || "this product", 60)) + ". Each read the page and said how likely they are to buy, weighted by how many shoppers like them you get. Reviews from past buyers count too. " + vSub) +
+        '<div class="sh-grid">' + sh.personas.map(rCard).join("") + "</div>" + rvRow +
         (rv.read ? '<p class="sh-rv"><b>From your reviews:</b> ' + esc(rv.summary || "") + (rv.doubts && rv.doubts.length ? " Buyers keep asking: " + esc(rv.doubts.join("; ")) + "." : "") + "</p>" : "") + "</section>";
-    } else h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Shoppers", "Shoppers couldn't walk this page this time", "The shopper read didn't come back for this scan (our free AI quota may be busy), so the CRO score uses the house rules alone. Run it again in a few minutes for the full read.") + "</section>";
+    } else h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Customer voice", "Shoppers couldn't walk this page this time", "The shopper read didn't come back for this scan (our free AI quota may be busy), so the customer voice " + (RVW && RVW.score != null ? "uses your reviews alone" : "is left out") + ". Run it again in a few minutes for the full read.") + rvRow + "</section>";
     var byG = function (a, b) { return (b.gain || 0) - (a.gain || 0); };
     var top = Pl ? Pl.cro.concat(Pl.speed).filter(function (f) { return f.gain > 0; }).sort(byG).slice(0, 3) : [];
     if (top.length) h += '<section class="rp-sec tf" id="rp-top">' + head("Do these first", "Your top " + top.length + " fixes", "Each number is what that fix alone adds to your overall score." + (G.top3 && G.top3.to > G.top3.from ? " All " + top.length + " together: " + G.top3.from + " → " + G.top3.to + "." : "")) +
@@ -813,8 +875,9 @@
     var PF = G.proof;
     if (PF) {
       var pw = Math.round(100 * ((G.w4 && G.w4.proof) || 0.4));
-      h += '<section class="rp-sec pf" id="rp-proof">' + head("Proof", "Proof on the page: " + PF.score + "/100", (PF.carry && PF.carry >= PF.raw ? "Shoppers already know " + esc((G.shop && G.shop.brand) || "this brand") + (PF.tier === "premium" || PF.tier === "luxury" ? " as a " + esc(PF.tier) + " brand" : "") + ", so the name does most of the proving. On the page itself: " + PF.raw + "/100. " : "What a careful shopper can actually check before paying. ") + pw + "% of the CRO score.") +
-        '<div class="pf-row">' + PF.items.map(function (i) { return '<span class="pf-i ' + (i.bad ? "bad" : i.ok ? "ok" : "no") + '"><i>' + (i.bad ? "✕" : i.ok ? "✓" : "–") + "</i>" + esc(i.label) + "</span>"; }).join("") + "</div></section>";
+      h += '<section class="rp-sec pf" id="rp-proof">' + head("Proof", "Proof on the page: " + PF.score + "/100", (PF.carry && PF.carry >= PF.raw ? "Shoppers already know " + esc((G.shop && G.shop.brand) || "this brand") + (PF.tier === "premium" || PF.tier === "luxury" ? " as a " + esc(PF.tier) + " brand" : "") + ", so the name does most of the proving. On the page itself: " + PF.raw + "/100. " : "Besides reviews, what a careful shopper can check before paying: tests and certificates, specs, results. ") + pw + "% of the CRO score.") +
+        '<div class="pf-row">' + PF.items.map(function (i) { return '<span class="pf-i ' + (i.bad ? "bad" : i.ok ? "ok" : i.unk ? "unk" : "no") + '"' + (i.unk ? ' title="Loaded with JavaScript and didn\'t load for our reader"' : "") + "><i>" + (i.bad ? "✕" : i.ok ? "✓" : i.unk ? "?" : "–") + "</i>" + esc(i.label) + "</span>"; }).join("") + "</div>" +
+        "</section>";
     }
     var rl = G.rules || [], app = rl.filter(function (r) { return r.st !== "na"; }), ok = app.filter(function (r) { return r.st === "pass"; }).length;
     h += '<section class="rp-sec rl" id="rp-rules">' + head("House rules", ok + " of " + app.length + " basics in place", "Hard facts we check on every product page. Together they make up " + Math.round(100 * ((G.w4 && G.w4.rules) || 0.25)) + "% of the CRO score: " + (G.rulesScore == null ? "n/a" : G.rulesScore + "/100") + ".") +
@@ -856,7 +919,7 @@
     });
     return '<section class="rp-sec" id="rp-questions">' + head("Buyer questions", "What " + esc(G.cat === "Other" ? "shoppers" : G.cat.toLowerCase() + " shoppers") + " ask before they pay", "The doubts " + (G.sub ? esc(G.sub.toLowerCase()) + " " : "") + "buyers have, from the Troopod barrier library" + (G.ai ? " plus questions written for this exact product" : "") + ", checked against what your page actually says. Must-solve doubts stop the sale.") + h + "</section>";
   }
-  var BR_NAME = { rules: "House rules", shoppers: "Shoppers", proof: "Proof on the page", clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", speed: "Speed on phone", flow: "Focus & flow", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
+  var BR_NAME = { rules: "House rules", shoppers: "Customer voice", proof: "Proof on the page", clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", speed: "Speed on phone", flow: "Focus & flow", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
   var BR_Q = { clarity: "Do shoppers understand what they get and that it suits them?", trust: "Do shoppers feel safe buying here?", price: "Do shoppers see the full price, delivery date and how to pay?", speed: "Does the page load fast on a phone?", flow: "Is the path to buy clear, and does the page match the ad?", discover: "Can Google and AI assistants find you?", aov: "Does the page invite a bigger basket?", retain: "Will first-time buyers come back?" };
   function rItem(i) {
     var cls = i.st === "ok" ? "ok" : i.st === "confirm" ? "confirm" : i.st === "bad" ? "bad" : "warn";
@@ -1085,12 +1148,12 @@
   function markdown(G) {
     if (!G) return "";
     var md = "\n## TrooGrowth\n\n" + "Overall " + G.score + "/100 (CRO " + G.cro + "/100, " + G.croW + "%; speed " + G.speed + "/100, " + G.speedW + "%).\n\n" + (G.one ? "**Biggest problem:** " + G.one.text + "\n\n" : "") +
-      (G.scoreV === 4 && G.shop ? "### Shoppers (" + G.shopScore + "/100)\n" + G.shop.personas.map(function (p) { return "- **" + p.n + "** (" + p.fit + "% of shoppers): " + p.buy + "/100. \u201c" + p.leave + "\u201d" + (p.fix && p.fix.change ? " Fix: " + p.fix.change : ""); }).join("\n") + "\n\n" : "") +
+      (G.scoreV === 4 && G.shop ? "### Customer voice (" + (G.voice != null ? G.voice : G.shopScore) + "/100: shoppers " + G.shopScore + (G.reviews && G.reviews.score != null ? ", reviews " + G.reviews.score : "") + ")\n" + G.shop.personas.map(function (p) { return "- **" + p.n + "** (" + p.fit + "% of shoppers): " + p.buy + "/100. \u201c" + p.leave + "\u201d" + (p.fix && p.fix.change ? " Fix: " + p.fix.change : ""); }).join("\n") + "\n\n" : "") +
       (G.scoreV === 4 && G.rules ? "### House rules (" + G.rulesScore + "/100)\n" + G.rules.map(function (r) { return "- [" + r.st + "] " + r.t + ": " + r.ev; }).join("\n") + "\n\n" : "") + "Category: " + G.cat + (G.sub ? " > " + G.sub : "") + ". Season: " + G.season.name + ".\n\n### Three things this week\n" + G.week.map(function (w, i) { return (i + 1) + ". " + w.title + " (" + (BR_NAME[w.branch] || "") + ")"; }).join("\n") + "\n\n### Buyer questions\n";
     G.qs.forEach(function (q) { md += "- [" + G_LABEL[q.g] + "] " + q.q + (q.g !== "yes" && q.fix ? " Fix: " + q.fix : "") + "\n"; });
     md += "\n### Growth levers\n"; G.levers.forEach(function (l) { md += l.rank + ". " + l.name + ": " + l.score + "/100, 10% better is worth " + moneyFmt(l.inr10, G.money.cur) + "/month\n"; });
     return md;
   }
 
-  win.TrooGrowth = { catOf: catOf, pageText: pageText, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, NAMES: BR_NAME, project: project };
+  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, NAMES: BR_NAME, project: project };
 })();

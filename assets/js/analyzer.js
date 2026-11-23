@@ -592,7 +592,7 @@
         var body = it(document.body), re = /(?:^|\n)\s*([\d,]+)\s*\n\s*([\d,]+)\s*\n\s*([\d,]+)\s*\n\s*([\d,]+)\s*\n\s*([\d,]+)\s*(?=\n|$)/g, mh;
         while ((mh = re.exec(body))) {
           var hv = mh.slice(1, 6).map(num), sum = hv.reduce(function (a, b) { return a + b; }, 0);
-          if (sum && Math.abs(sum - best.c) <= Math.max(2, best.c * 0.03)) { hist = hv[0] >= hv[4] ? hv : hv.slice().reverse(); break; }
+          if (sum && Math.abs(sum - best.c) <= Math.max(1, best.c * 0.01)) { hist = hv[0] >= hv[4] ? hv : hv.slice().reverse(); break; }
           re.lastIndex = mh.index + 1;
         }
       }
@@ -606,6 +606,40 @@
       if (w.loox || q("[class*=loox]").length) a.push("Loox");
       if (w.StampedFn || q("[class*=stamped]").length) a.push("Stamped");
       return a;
+    }
+    /* the first phone screen as a shopper sees it, scripts and all: what's covering it, promo strips, stickers, price and button */
+    var FIRST = null;
+    function firstProbe() {
+      if (FIRST || !document.body || (window.scrollY || 0) > 5) return;
+      try {
+        var vw = window.innerWidth || 390, vh = window.innerHeight || 844, A = vw * vh, cover = 0, overlays = 0, img = 0, chars = 0, price = false, cta = false, bands = [], stk = [];
+        var ATC = /add to (cart|bag|basket)|buy (it )?now|add to order|order now|shop now/i, OFF = /\d+\s?%|\boff\b|free|sale|code|deal|launch|offer|save|cashback|shop now|₹|rs\.?\s?\d/i, STK = /\d+\s?%|\boff\b|sold|best ?seller|bestseller|\bnew\b|\bsale\b|save|trending|selling fast|limited/i;
+        function solid(cs) { var m = String(cs.backgroundColor || "").match(/rgba?\(([^)]+)\)/); if (!m) return false; var p = m[1].split(","); return p.length < 4 || +p[3] > 0.5; }
+        q("body *").slice(0, 3000).forEach(function (el) {
+          var r = el.getBoundingClientRect(); if (r.width < 8 || r.height < 8 || r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) return;
+          var cs = getComputedStyle(el); if (cs.visibility === "hidden" || cs.display === "none" || +cs.opacity < 0.1) return;
+          var vis = Math.max(0, Math.min(vh, r.bottom) - Math.max(0, r.top)) * Math.max(0, Math.min(vw, r.right) - Math.max(0, r.left));
+          var own = ""; for (var c = el.firstChild; c; c = c.nextSibling) if (c.nodeType === 3) own += c.nodeValue;
+          own = own.replace(/\s+/g, " ").trim(); if (own) chars += own.length;
+          /* something floating over the page (pop-up, video bubble, offer box), not the header or a bottom buy bar */
+          if (cs.position === "fixed" && cs.pointerEvents !== "none" && vis > A * 0.04 && r.top > 64 && r.top < vh * 0.8 && (solid(cs) || el.querySelector("img,video,iframe"))) {
+            var tx = it(el); if (!ATC.test(tx.slice(0, 400))) { overlays++; cover += vis; }
+          }
+          /* promo strips near the top: full-width bands with offer words (merged, so one strip counts once) */
+          if (r.top < 280 && r.width >= vw * 0.9 && r.height >= 16 && r.height <= 70 && OFF.test(it(el).slice(0, 300))) {
+            var hit = bands.some(function (bd) { return r.top < bd[1] + 4 && r.bottom > bd[0] - 4; }); if (!hit) bands.push([r.top, r.bottom]);
+          }
+          /* offer stickers: short badge text; parts of one badge are merged */
+          if (own && own.length < 40 && STK.test(own) && r.width < 220 && r.height < 70 && r.top > 60 && !(r.top < 280 && r.width >= vw * 0.9)) {
+            var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            if (!stk.some(function (p) { return Math.abs(p[0] - cx) < 90 && Math.abs(p[1] - cy) < 36; })) stk.push([cx, cy]);
+          }
+          if ((el.tagName === "IMG" || el.tagName === "VIDEO" || el.tagName === "PICTURE" || el.tagName === "CANVAS") && vis > img) img = vis;
+          if (!price && own && /(₹|rs\.?|\$|£|€)\s?\d/i.test(own) && r.bottom < vh) price = true;
+          if (!cta && (el.tagName === "BUTTON" || el.tagName === "A" || el.getAttribute("role") === "button" || el.type === "submit") && r.bottom < vh && r.width > 80 && ATC.test(it(el).slice(0, 60))) cta = true;
+        });
+        FIRST = { overlays: overlays, cover: Math.min(1, Math.round(100 * cover / A) / 100), strips: Math.min(bands.length, 6), stickers: Math.min(stk.length, 12), img: Math.round(100 * img / A) / 100, chars: chars, price: price, cta: cta };
+      } catch (e) { FIRST = null; }
     }
     /* a snapshot of what's on screen; it never changes the page, so it can run as often as needed */
     var DROP = "header, nav, footer, [role=dialog], [aria-modal=true], [class*=popup], [class*=modal], [class*=drawer], [id*=drawer], [class*=announcement], [class*=cookie], [class*=recommend], [class*=related], [class*=upsell], [class*=complementary], [class*=product-card], [class*=card-product], [class*=product-item], [class*=all-reviews], [class*=carousel]";
@@ -622,7 +656,8 @@
         q(DROP).forEach(function (n) { if (m.contains(n) && n !== m && !(hh && n.contains(hh)) && !outer.some(function (o) { return o.contains(n); })) outer.push(n); });
         outer.forEach(function (n) { var x = it(n); if (x.length > 12) main = main.split(x).join("\n"); });
       } catch (e) { main = all; }
-      try { parent.postMessage({ type: "troo-live", id: ID, fin: !!fin, why: why, ms: Date.now() - t0, title: document.title, h1: h1, all: all.slice(0, 60000), main: main.slice(0, 40000), rv: rv, apps: ap }, "*"); } catch (e) { /* gone */ }
+      firstProbe();
+      try { parent.postMessage({ type: "troo-live", id: ID, fin: !!fin, why: why, ms: Date.now() - t0, title: document.title, h1: h1, all: all.slice(0, 60000), main: main.slice(0, 40000), rv: rv, apps: ap, first: FIRST }, "*"); } catch (e) { /* gone */ }
     }
     function tick() {
       if (sent) return;
@@ -634,7 +669,7 @@
       setTimeout(tick, 420);
     }
     var ticks = 0;
-    function start() { if (started) return; started = true; setTimeout(tick, 1200); }
+    function start() { if (started) return; started = true; setTimeout(function () { firstProbe(); tick(); }, 1500); }
     if (document.readyState === "complete") start(); else { window.addEventListener("load", start); document.addEventListener("DOMContentLoaded", function () { setTimeout(function () { snap("early", false); }, 600); setTimeout(start, 5000); }); }
     setTimeout(start, 8000);
     /* some stores' scripts send the frame somewhere else (they read the address as about:srcdoc); keep what was read before it goes */

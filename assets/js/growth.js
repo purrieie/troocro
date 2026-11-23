@@ -52,7 +52,7 @@
     if (mode === "replaced") { t.main = lines.join(" ").slice(0, 20000); t.all = String(L.all || "").replace(/\s+/g, " ").slice(0, 120000) || t.main; }
     else if (extra) { t.main = (sm + " " + extra).slice(0, 30000); t.all = (String(t.all || "") + " " + extra).slice(0, 140000); }
     if (!t.h1 && L.h1) t.h1 = L.h1;
-    t.live = { ok: true, mode: mode, extra: extra.slice(0, 6000), added: extra.length, rv: L.rv || null, apps: L.apps || [], ms: L.total || L.ms || 0 };
+    t.live = { ok: true, mode: mode, extra: extra.slice(0, 6000), added: extra.length, rv: L.rv || null, apps: L.apps || [], ms: L.total || L.ms || 0, first: L.first || null };
     return t;
   }
   function sentenceAt(t, i, max) {
@@ -609,7 +609,7 @@
      specs and materials; results with numbers). Brand equity counts as proof for household names and well-known premium brands. */
   var PROOF_RX = /clinical(?:ly)?|\b(?:scientific|independent|published|research)\s+stud(?:y|ies)\b|\bstud(?:y|ies)\s+(?:show|shows|showed|found|proves?|confirm(?:s|ed)?)\b|volunteers|participants|dermatologist[- ](?:tested|approved)|lab[- ]tested|third[- ]party|certified|certificate|hallmark|\bbis\b|\bigi\b|\bgia\b|\bisi\b|fssai|\biso\b|\bgmp\b|ayush|patent|award|as seen (?:in|on)|featured in|bee \d|\d[- ]star (?:rated|energy)|organic certified|india organic|usda|great taste|peta|vegan society|oeko|gots/gi;
   var INFO_RX = /how to (?:use|brew|wear|apply|install)|directions|ingredients?|specifications?|dimensions|material|fabric|cotton|polyester|linen|\bgsm\b|\bfit\b|model (?:is )?wear|size chart|wash|in the box|what.s inside|care (?:guide|instructions)|battery|playback|playtime|bluetooth|warranty|ipx\d|water[- ]resistant|compatib|\brpm\b|\bwatts?\b|bldc|motor|remote|purity|carat|karat|\d{2}kt|silver|brass|plating|gold weight|net (?:weight|quantity|wt)|shelf life|nutrition|calories|protein|servings?|cups? per|origin|sourced|preservative|arabica|thickness|layers?|foam|firmness|trial|weight/gi;
-  function proof4(R, ctx, sh, rules) {
+  function proof4(R, ctx, sh, rules, RV) {
     var P = R.page || {}, tr = ctx.trust || {}, main = String(ctx.text.main || ""), t = main + " " + String((tr.product && tr.product.desc) || ""), it = [], pts = 0;
     function add(k, ok, n, label) { it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
     /* someone else vouches: tests, certificates, awards, other platforms */
@@ -622,6 +622,8 @@
     var ni = Object.keys(info).length;
     add("info", ni >= 1, ni >= 6 ? 15 : ni >= 3 ? 10 : 3, "Specs, materials, ingredients or how-to as text");
     /* results with numbers */
+    /* a large, natural review base is proof of scale: 500+ reviews at 4.2★ or more that don't look filtered or unreliable */
+    if (RV && RV.cnt >= 500 && RV.rating >= 4.2 && !RV.perfect && !RV.fishy) add("scale", true, 20, RV.cnt.toLocaleString("en-IN") + " reviews at " + (+RV.rating).toFixed(1) + "★");
     add("results", /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers)|tested on \d+|\d+ (?:volunteers|participants|subjects)|\bday 0\b|before\s*(?:&|and|\/)\s*after|(?:trusted by|loved by|over|\d+)\s*[\d.,]+\s*(?:lakh|l\+|k\+|mn|million|crore)?\s*(?:happy )?customers/i.test(t), 20, "Results or customer numbers");
     var raw = pts * 100 / 60;
     var price = (sh && sh.stock && sh.stock.price) || (tr.product && tr.product.price) || P.aov || 0;
@@ -633,6 +635,27 @@
     var carry = known === "household" ? 80 : known === "well-known" && (tier === "premium" || tier === "luxury") ? 75 : 0;
     var lv = ctx.text.live || null;
     return { score: Math.max(raw, carry), raw: raw, carry: carry, known: known || "", tier: tier || "", items: it, live: lv ? (lv.ok ? lv.mode : "failed") : "" };
+  }
+  /* Looks (v12.6): how the page looks at a glance. The first phone screen as shoppers see it (measured in the live copy:
+     price and button, anything covering it, promo strips and stickers, a big product photo), plus how consistent the design is
+     (fonts, colours, tiny text, emoji) on the first two screens of the phone render. */
+  var LOOK_W = 0;
+  function looks4(R, ctx) {
+    var f = (R.cro && R.cro.f) || null, lv = ctx.text && ctx.text.live, F = lv && lv.ok ? lv.first : null, it = [], pts = 0, max = 0;
+    function add(k, ok, n, label) { max += n; it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
+    if (F) {
+      add("buy", F.price && F.cta, 20, F.price && F.cta ? "Price and Add to cart on the first screen" : !F.price && !F.cta ? "Price and Add to cart only after scrolling" : !F.price ? "Price only after scrolling" : "Add to cart only after scrolling");
+      add("clear", F.cover < 0.08, 20, F.cover < 0.08 ? "Nothing covers the first screen" : "Pop-ups or floating widgets cover " + Math.round(F.cover * 100) + "% of it");
+      add("calm", F.strips <= 1 && F.stickers <= 1, 15, F.strips <= 1 && F.stickers <= 1 ? "At most one promo strip and one sticker" : (F.strips > 1 ? F.strips + " promo strips" : "") + (F.strips > 1 && F.stickers > 1 ? " and " : "") + (F.stickers > 1 ? F.stickers + " offer stickers" : "") + " on the first screen");
+      add("photo", F.img >= 0.3, 15, F.img >= 0.3 ? "The product photo leads the first screen" : "The product photo takes under a third of the first screen");
+    }
+    if (f && f.d_colors != null) {
+      var fam = f.font_families != null ? f.font_families : f.d_fonts;
+      add("type", fam <= 2 && f.d_colors <= 10, 15, fam <= 2 && f.d_colors <= 10 ? "One consistent type style and palette" : (fam > 2 ? fam + " font families" : "") + (fam > 2 && f.d_colors > 10 ? " and " : "") + (f.d_colors > 10 ? f.d_colors + " text colours" : "") + " in the first two screens");
+      add("text", (f.small_text || 0) < 0.2 && (f.d_emoji || 0) <= 1, 15, (f.small_text || 0) < 0.2 && (f.d_emoji || 0) <= 1 ? "Readable text, no emoji clutter" : (f.small_text >= 0.2 ? Math.round(100 * f.small_text) + "% of the text is tiny" : "") + (f.small_text >= 0.2 && f.d_emoji > 1 ? ", " : "") + (f.d_emoji > 1 ? f.d_emoji + " emoji" : ""));
+    }
+    if (!max) return null;
+    return { score: Math.round(100 * pts / max), items: it, live: !!F, first: F || null };
   }
   function shopScore(sh) {
     if (!sh || !sh.personas || !sh.personas.length) return null;
@@ -809,7 +832,7 @@
     var sh = ctx.shop && ctx.shop.personas && ctx.shop.personas.length ? ctx.shop : null;
     var rules = rules4(R, ctx, qs, TR), rApp = rules.filter(function (r) { return r.v != null; });
     var rScore = rApp.length ? Math.round(100 * rApp.reduce(function (t, r) { return t + r.v; }, 0) / rApp.length) : null, sScore = shopScore(sh);
-    var PF = proof4(R, ctx, sh, rules), RV = reviews4(R, ctx, sh);
+    var RV = reviews4(R, ctx, sh), PF = proof4(R, ctx, sh, rules, RV), LK = looks4(R, ctx);
     var vScore = sScore == null ? RV.score : RV.score == null ? sScore : Math.round((1 - REV_W) * sScore + REV_W * RV.score);
     var missP = PF.items.filter(function (i) { return !i.ok && !i.bad && !i.unk; }).map(function (i) { return i.label.toLowerCase(); });
     var proofTo = PF.carry >= PF.raw ? PF.score : Math.min(100, PF.score + 25);
@@ -832,7 +855,7 @@
     res.top3 = res.plan.defaultOn.length ? { from: b4.overall, to: project4(Mo4, res.plan.defaultOn).overall } : null;
     var wsum = (vScore == null ? 0 : W4.shop) + W4.proof + (rScore == null ? 0 : W4.rules), wOf = function (w) { return Math.round(850 * w / wsum) / 10; };
     res.parts = [{ id: "shoppers", w: wOf(W4.shop), v: vScore, grp: "cro" }, { id: "proof", w: wOf(W4.proof), v: PF.score, grp: "cro" }, { id: "rules", w: wOf(W4.rules), v: rScore, grp: "cro" }, { id: "speed", w: 15, v: b4.speed, est: !!B.speed.est, grp: "speed" }].filter(function (p) { return p.v != null; });
-    res.mix = b4.P.mix; res.scoreV = 4; res.rules = rules; res.rulesScore = rScore; res.shop = sh; res.shopScore = sScore; res.voice = vScore; res.reviews = RV; res.revW = REV_W; res.proof = PF; res.w4 = { shop: vScore == null ? 0 : W4.shop / wsum, proof: W4.proof / wsum, rules: rScore == null ? 0 : W4.rules / wsum };
+    res.mix = b4.P.mix; res.scoreV = 4; res.rules = rules; res.rulesScore = rScore; res.shop = sh; res.shopScore = sScore; res.voice = vScore; res.reviews = RV; res.looks = LK; res.revW = REV_W; res.proof = PF; res.w4 = { shop: vScore == null ? 0 : W4.shop / wsum, proof: W4.proof / wsum, rules: rScore == null ? 0 : W4.rules / wsum };
     if (sh) { if (sh.one_liner) res.one = { text: sh.one_liner, src: "ai" }; if (sh.product) res.product = sh.product; if (sh.buyer) res.buyer = sh.buyer; res.brandKnown = sh.brand_known; }
     res.unread = unreadOf(R, ctx);
     if (res.unread) { res.score = null; res.cro = null; res.parts = []; }

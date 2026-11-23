@@ -1033,6 +1033,7 @@
       if (sideM) addFeed("act", pType === "PDP" ? "Checked your homepage too" : "Checked one of your product pages too", "Two pages of the same site rank stores far more reliably than one", "", "plan");
     }
     var cro = croM && croM.f ? croScore(croM.f, pType, sideM, lead) : null;
+    if (croM && croM.regions && croM.pageH) { S.report.regions = croM.regions; S.report.pageH = croM.pageH; }
     if (cro && cro.kind === "blend" && sideM && sideM.f) addSideFindings(S.report, sideM, cro.side.type);
     if (cro) { S.report.cro = { score: cro.score, up: cro.up, down: cro.down, f: cro.f, v: 4, n: cro.n, kind: cro.kind, labels: cro.labels, page: cro.page, side: cro.side }; addFeed("act", "Benchmarked the page", (lead ? "Visitor experience " : "Shopper experience ") + cro.score + "/100 against " + cro.n + " " + (lead ? "fintech, healthtech and service sites" : "sites") + " we measured the same way", "", "plan"); }
     else addFeed("info", "Limited score", "We couldn't measure the page on a phone, so the score uses its code only", "", "plan");
@@ -1599,7 +1600,13 @@
             var f = croFeatures(d, w);
             var visibleText = (d.body.innerText || "").replace(/\s+/g, " ").length;
             if (!f || visibleText < 250 || (!f.cta_found && !f.h1 && !f.cards && !f.hero_cta && !f.lead_cta_found)) return finish(null);
-            finish({ f: f });
+            var regs = {}, pageH = 0;
+            try {
+              var els = findRegions(d, w), sy = w.scrollY || 0;
+              Object.keys(els).forEach(function (k) { var el = els[k]; if (!el) return; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return; regs[k] = { x: Math.round(r.left), y: Math.round(r.top + sy), w: Math.round(r.width), h: Math.round(r.height) }; });
+              pageH = Math.round(Math.max(d.documentElement.scrollHeight || 0, d.body.scrollHeight || 0));
+            } catch (eR) { regs = {}; }
+            finish({ f: f, regions: regs, pageH: pageH });
           } catch (e) { finish(null); }
         }, 2200);
       }
@@ -1806,8 +1813,8 @@
   function rpWeights(R, C) {
     var G = R.growth, A = C.areas;
     function tile(nm, v, w, est, cls) {
-      return '<div class="rp-sub ' + cls + '"><span class="nm">' + esc(nm) + (est ? "<em>est.</em>" : "") + '</span><div class="v"><b>' + (v == null ? "n/a" : v) + "</b><span>/100</span></div>" +
-        '<span class="bar"><i style="width:' + (v || 0) + "%;background:" + colorFor(v) + '"></i></span><span class="w">' + (w != null ? w + "% of the overall score" : "not measured") + "</span></div>";
+      return '<div class="rp-sub ' + cls + '"><span class="nm"><i class="pl-dot ' + cls + '"></i>' + esc(nm) + (est ? "<em>est.</em>" : "") + '</span><div class="v"><b data-plan-' + cls + ">" + (v == null ? "n/a" : v) + "</b><span>/100</span></div>" +
+        '<span class="bar"><i class="gain" data-plan-' + cls + '-bar style="width:' + (v || 0) + '%"></i><i class="now" style="width:' + (v || 0) + '%"></i></span><span class="w">' + (w != null ? w + "% of the overall score" : "not measured") + "</span></div>";
     }
     var cro = A.filter(function (a) { return a.grp === "cro"; }), sp = A.filter(function (a) { return a.grp === "speed"; }), side = A.filter(function (a) { return a.side; });
     function row(a) { return '<tr><td><span class="pn">' + esc(a.name) + (a.est ? "<em>est.</em>" : "") + '</span><span class="pw">' + esc(a.src) + '</span></td><td class="pv" style="color:' + colorFor(a.v) + '">' + (a.v == null ? "n/a" : a.v) + '</td><td class="pc">' + (a.side ? "–" : a.w != null ? a.w + "%" : "") + "</td></tr>"; }
@@ -1817,7 +1824,7 @@
       : SB.cwv == null ? [{ name: "Google PageSpeed (mobile)", src: "Lighthouse on a mid-range phone", v: SB.perf, w: C.speedW }]
       : [{ name: "Core Web Vitals", src: "Main image time, blocked time and layout shift, against Google's thresholds", v: SB.cwv, w: half }, { name: "Google PageSpeed (mobile)", src: "Lighthouse on a mid-range phone", v: SB.perf, w: half }];
     if (SB.capped) spRows.push({ name: "Capped at 50", src: "Google's real-user data rates this page slow", v: 50, w: null });
-    var h = '<div class="rp-subs">' + tile("CRO score", C.cro, C.croW, false, "cro") + tile("Speed score", C.speed, C.speedW, sp.some(function (a) { return a.est; }), "spd") + "</div>";
+    var h = (G.plan ? '<p class="rp-plan-line" data-plan-line hidden></p>' : "") + '<div class="rp-subs">' + tile("CRO score", C.cro, C.croW, false, "cro") + tile("Speed score", C.speed, C.speedW, sp.some(function (a) { return a.est; }), "speed") + "</div>";
     h += '<details class="rp-how rp-wt"><summary>How this score is weighted</summary><table class="rp-wtab"><thead><tr><th>Pillar</th><th>Score</th><th>Weight</th></tr></thead><tbody>';
     h += '<tr class="grp"><td>CRO score</td><td class="pv">' + (C.cro == null ? "n/a" : C.cro) + '</td><td class="pc">' + (C.croW != null ? C.croW + "%" : "") + "</td></tr>" + cro.map(row).join("");
     h += '<tr class="grp"><td>Speed score</td><td class="pv">' + (C.speed == null ? "n/a" : C.speed) + '</td><td class="pc">' + (C.speedW != null ? C.speedW + "%" : "") + "</td></tr>" + (sp.length ? spRows.map(row).join("") : "");
@@ -2464,7 +2471,7 @@
       if (!base) { toast("Share links work once the site is hosted."); return; }
       copyText(base + "?r=" + R.slug).then(function () { toast("Link copied"); }, function () { toast("Couldn't copy. The link is " + base + "?r=" + R.slug); });
     });
-    if (win.TrooGrowth && R.growth) win.TrooGrowth.wire(root, R.growth);
+    if (win.TrooGrowth && R.growth) win.TrooGrowth.wire(root, R.growth, { view: function () { return S.viewP && S.url === R.url ? S.viewP : fetchView(R.url); } });
     var pr = $("[data-print]", root); if (pr) pr.addEventListener("click", function () { $$("details", root).forEach(function (d) { d.open = true; }); win.print(); });
     var nb = $("[data-new]", root); if (nb) nb.addEventListener("click", function () { setQuery(""); urlIn.value = ""; show("start"); urlIn.focus(); });
     /* tabs */

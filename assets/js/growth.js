@@ -250,9 +250,59 @@
     var slow = p.field && p.field.overall === "SLOW";
     var capped = slow && score > 50;
     if (slow) score = Math.min(score, 50);
-    return { score: score, items: items, perf: mob, cwv: cwv == null ? null : Math.round(cwv), capped: capped,
+    return { score: score, items: items, perf: mob, cwv: cwv == null ? null : Math.round(cwv), capped: capped, slow: !!slow,
+      bands: { lcp: band(lcp, 2.5, 4), tbt: band(m.tbt, 200, 600), cls: band(m.cls, 0.1, 0.25) },
+      vit: { lcp: lcp, tbt: m.tbt != null ? Math.round(m.tbt) : null, cls: m.cls, kb: m.weightKb || null, field: p.field ? p.field.overall : null },
       note: "On a mid-range phone: Google PageSpeed " + mob + "/100, Core Web Vitals " + (cwv == null ? "n/a" : Math.round(cwv) + "/100") + " (main image " + (lcp != null ? lcp.toFixed(1) + "s" : "n/a") + ", blocked " + (m.tbt != null ? Math.round(m.tbt) + "ms" : "n/a") + ", layout shift " + (m.cls != null ? m.cls.toFixed(2) : "n/a") + ")." + (slow ? " Google's real-user data says slow, so this is capped at 50." : "") + (desk != null ? " Desktop " + desk + "/100, shown only." : "") };
   }
+
+  /* ---------------- the plan: what each fix is worth ----------------
+     A small copy of the score model that the report re-runs in the browser: tick fixes, get the new CRO, Speed and
+     Overall. Same maths as build(): an answered question lifts its pillar, a removed contradiction lifts trust, and a
+     speed fix moves that Core Web Vital into Google's good range and adds Lighthouse's weight for it to PageSpeed. */
+  var PW = { clarity: 30, trust: 25, price: 20, flow: 10, speed: 15 }, CRO_K = ["clarity", "trust", "price", "flow"];
+  var LH_W = { lcp: 0.25, tbt: 0.30, cls: 0.25 };
+  var INTEGK = { contra: 1, contra_exc: 1, contra_ai: 1, fake_urgency: 1, numbers: 1, returns_scope: 1 };
+  function penOf(i) { return i.st === "bad" ? (i.sev >= 3 ? 16 : 10) : i.st === "warn" ? (i.sev >= 2 ? 7 : 4) : 0; }
+  function speedOf(sp, fx) {
+    if (!sp || sp.est) return sp ? sp.estScore : null;
+    if (sp.perf == null) return null;
+    var perf = sp.perf, bands = [];
+    ["lcp", "tbt", "cls"].forEach(function (k) { var b = sp.b[k]; if (fx[k] && b != null) { perf += LH_W[k] * (100 - b); b = 100; } bands.push(b); });
+    perf = Math.min(100, perf);
+    var cwv = avg(bands), sc = cwv == null ? Math.round(perf) : Math.round(0.5 * perf + 0.5 * cwv);
+    if (sp.slow && !(fx.lcp || fx.tbt)) sc = Math.min(sc, 50);
+    return sc;
+  }
+  function project(Mo, ids) {
+    var on = {}; (ids || []).forEach(function (id) { on[id] = 1; });
+    var S = {}, pen = Mo.pen, cod = Mo.cod, a11y = Mo.a11y, fx = {};
+    CRO_K.forEach(function (k) { S[k] = Mo.q[k] ? Mo.q[k].S : 0; });
+    Mo.fixes.forEach(function (f) {
+      if (!on[f.id]) return; var e = f.e;
+      if (e.t === "q") S[e.p] += e.d; else if (e.t === "integ") pen -= e.pen; else if (e.t === "cod") cod = 0;
+      else if (e.t === "a11y") a11y = Math.max(a11y || 0, 95); else if (LH_W[e.t]) fx[e.t] = 1;
+    });
+    function qv(k) { var q = Mo.q[k]; return q && q.W ? Math.round(100 * S[k] / q.W) : null; }
+    var P = {};
+    P.clarity = qv("clarity");
+    var tq = qv("trust"), integ = Mo.integ ? clamp(Math.round(100 - pen), 0, 100) : null;
+    P.trust = tq == null ? integ : integ == null ? tq : Math.round(0.7 * tq + 0.3 * integ);
+    var pq = qv("price"); P.price = pq == null ? null : Math.max(0, pq - cod);
+    var fq = qv("flow"), fp = [[Mo.croS, 0.5], [fq, 0.35], [a11y, 0.15]].filter(function (x) { return x[0] != null; }), fw = fp.reduce(function (t, x) { return t + x[1]; }, 0);
+    P.flow = fw ? Math.round(fp.reduce(function (t, x) { return t + x[0] * x[1]; }, 0) / fw) : null;
+    P.speed = speedOf(Mo.sp, fx);
+    function gx(keys) { var tw = 0, tl = 0; keys.forEach(function (k) { if (P[k] != null) { tw += PW[k]; tl += PW[k] * Math.log(Math.max(5, P[k])); } }); return tw ? { x: Math.exp(tl / tw), w: tw } : null; }
+    var c = gx(CRO_K), sp = gx(["speed"]), a = gx(CRO_K.concat(["speed"]));
+    var cro = c ? Math.round(c.x) : null, spd = sp ? Math.round(sp.x) : null;
+    var overall = !a ? null : c && sp ? Math.round(Math.exp((c.w * Math.log(Math.max(5, cro)) + sp.w * Math.log(Math.max(5, spd))) / a.w)) : Math.round(a.x);
+    return { P: P, cro: cro, speed: spd, overall: overall, x: a ? a.x : null };
+  }
+  /* where on the page each problem sits (regions measured on the 390px render) */
+  var REG = { B01: "img", B02: "details", B04: "title", B05: "price", B06: "cta", B08: "cta", B09: "cta", B10: "cta", B13: "reviews", B15: "details", B16: "footer", B18: "cta", B19: "cta",
+    B20: "price", B22: "details", B27: "details", B32: "details", B36: "details", B38: "details", B39: "title", B40: "details", B46: "title", B48: "img", B49: "img", B50: "cta", B52: "price",
+    B53: "img", B55: "cta", B57: "title", B58: "details", B59: "title", B62: "details", B64: "details", B65: "title", B66: "price", B67: "nav", B68: "img", B69: "price", B70: "cta", B71: "cta", B72: "cta" };
+  var IREG = { contra: "cta", contra_exc: "cta", contra_ai: "content", fake_urgency: "cta", numbers: "price", returns_scope: "cta", cod: "price", a11y: "cta", lcp: "img", tbt: "nav", cls: "img", apps: "nav", est: "nav" };
 
   /* Trust: does anything on the page undercut itself? */
   function trust(R, ctx, qs) {
@@ -470,6 +520,37 @@
     var parts = CRO_K.concat(["speed"]).filter(function (k) { return B[k] && B[k].score != null; }).map(function (k) { return { id: k, w: Math.round(1000 * PW[k] / gAll.w) / 10, v: B[k].score, est: !!B[k].est, grp: k === "speed" ? "speed" : "cro" }; });
     var side = ["discover", "aov", "retain"].filter(function (k) { return B[k] && B[k].score != null; }).map(function (k) { return { id: k, v: B[k].score }; });
     var mustNo = all.filter(function (q) { return q.g === "no" && q.p === "must"; }).length;
+    /* the plan */
+    var SEVL = { must: "Must solve", should: "Should solve", basic: "Basics" }, fixes = [];
+    all.filter(function (q) { return q.g === "no" || q.g === "partly"; }).forEach(function (q) {
+      fixes.push({ id: "q_" + q.id, kind: "cro", pillar: q.grp, t: q.q, ev: q.ev[0] || "", fix: q.fix || "", sev: SEVL[q.p] || "", partly: q.g === "partly", region: q.src === "product" ? "content" : (REG[q.id] || "content"), e: { t: "q", p: q.grp, d: q.w * (1 - GSCORE[q.g]) } });
+    });
+    var integItems = TR.items.filter(function (i) { return INTEGK[i.k] && i.st !== "confirm"; });
+    integItems.filter(function (i) { return i.st === "bad" || i.st === "warn"; }).forEach(function (i, n) {
+      fixes.push({ id: "i_" + i.k + "_" + n, kind: "cro", pillar: "trust", t: i.t, ev: i.ev, fix: i.fix, sev: i.sev >= 3 ? "Must solve" : "Should solve", region: IREG[i.k] || "content", e: { t: "integ", pen: penOf(i) } });
+    });
+    if (codFee.length) fixes.push({ id: "i_cod", kind: "cro", pillar: "price", t: codFee[0].t, ev: codFee[0].ev, fix: codFee[0].fix, sev: "Should solve", region: "price", e: { t: "cod" } });
+    if (a11y != null && a11y < 80) fixes.push({ id: "i_a11y", kind: "cro", pillar: "flow", t: "Hard to use for some shoppers", ev: "Accessibility " + a11y + "/100 (Google Lighthouse): contrast, labels or tap targets.", fix: "Fix contrast and add labels to icon buttons.", sev: "Should solve", region: "cta", e: { t: "a11y" } });
+    var sItems = B.speed.items || [], appsI = sItems.filter(function (i) { return i.k === "apps"; })[0], hasTbt = sItems.some(function (i) { return i.k === "tbt"; });
+    sItems.forEach(function (i) {
+      if (i.k === "lcp" || i.k === "tbt" || i.k === "cls") fixes.push({ id: "s_" + i.k, kind: "speed", pillar: "speed", t: i.t, ev: i.ev + (i.k === "tbt" && appsI ? " Apps slowing it: " + appsI.ev : ""), fix: i.fix, sev: i.sev >= 3 ? "Must solve" : "Should solve", region: IREG[i.k], e: { t: i.k } });
+      else if (i.k === "apps" && !hasTbt) fixes.push({ id: "s_apps", kind: "speed", pillar: "speed", t: i.t, ev: i.ev, fix: i.fix, sev: "Should solve", region: "nav", e: { t: "tbt" } });
+      else if (i.k === "speed_est") fixes.push({ id: "s_est", kind: "speed", pillar: "speed", t: i.t, ev: i.ev, fix: i.fix, sev: "Should solve", region: "nav", e: { t: "none" }, nogain: true });
+    });
+    var Mo = { q: {}, pen: integItems.reduce(function (t, i) { return t + penOf(i); }, 0), integ: TR.score != null, cod: codFee.length ? 8 : 0, a11y: a11y, croS: croS,
+      sp: B.speed.est || B.speed.perf == null ? { est: true, estScore: B.speed.score } : { perf: B.speed.perf, b: B.speed.bands || {}, slow: !!B.speed.slow },
+      fixes: fixes.map(function (f) { return { id: f.id, e: f.e }; }) };
+    CRO_K.forEach(function (k) { var a = graded.filter(function (q) { return q.grp === k; }); Mo.q[k] = { W: a.reduce(function (t, q) { return t + q.w; }, 0), S: a.reduce(function (t, q) { return t + q.w * GSCORE[q.g]; }, 0) }; });
+    var base = project(Mo, []);
+    ["clarity", "trust", "price", "flow", "speed"].forEach(function (k) { if (B[k] && B[k].score !== base.P[k] && win.console) console.warn("plan model differs", k, B[k].score, base.P[k]); });
+    fixes.forEach(function (f) { if (f.nogain) { f.gain = null; return; } var d = project(Mo, [f.id]).x - base.x; f.gain = d >= 0.5 ? Math.round(d) : d > 0.05 ? 0.5 : 0; });
+    var byGain = function (a, b) { return (b.gain || 0) - (a.gain || 0) || (a.sev === "Must solve" ? -1 : 0) - (b.sev === "Must solve" ? -1 : 0); };
+    var croF = fixes.filter(function (f) { return f.kind === "cro"; }).sort(byGain), spF = fixes.filter(function (f) { return f.kind === "speed"; }).sort(byGain);
+    croF.forEach(function (f, i) { f.label = String(i + 1); }); spF.forEach(function (f, i) { f.label = "S" + (i + 1); });
+    var upTo = function (a) { return a.length ? project(Mo, a.map(function (f) { return f.id; })).overall - base.overall : 0; };
+    var plan = { Mo: Mo, base: { overall: base.overall, cro: base.cro, speed: base.speed }, cro: croF, speed: spF, upCro: upTo(croF), upSpeed: upTo(spF),
+      defaultOn: croF.concat(spF).filter(function (f) { return f.gain > 0; }).sort(byGain).slice(0, 3).map(function (f) { return f.id; }),
+      vit: B.speed.vit || null, est: !!B.speed.est };
     // biggest problem in one line
     var SOFT = { B06: 1, B17: 1, B18: 1, B19: 1, B21: 1, B25: 1, B66: 1, B68: 1, B65: 1 };
     var topQ = all.filter(function (q) { return q.g === "no" && q.p === "must" && !SOFT[q.id]; }).sort(function (a, b) { return (b.w + (b.checks && b.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (b.src === "product" ? 1 : 0)) - (a.w + (a.checks && a.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (a.src === "product" ? 1 : 0)); })[0];
@@ -504,7 +585,7 @@
       v: 1, at: new Date().toISOString(), cat: cat, sub: sub, catSrc: catSrc, market: mk, season: season, lead: lead,
       product: (ctx.insight && ctx.insight.product) || prod.title || P.title || "", buyer: (ctx.insight && ctx.insight.buyer) || "",
       score: gscore, cro: gCro ? gCro.v : null, speed: gSp ? gSp.v : null, croW: gCro && gAll ? Math.round(1000 * gCro.w / gAll.w) / 10 : null, speedW: gSp && gAll ? Math.round(1000 * gSp.w / gAll.w) / 10 : null,
-      parts: parts, side: side, scoreV: 3, mustNo: mustNo, qScore: qscore, layout: croS,
+      parts: parts, side: side, scoreV: 3, mustNo: mustNo, qScore: qscore, layout: croS, plan: plan,
       one: one, qs: pq.concat(qs), branches: B, money: money, levers: L, week: week, confirm: confirm.slice(0, 8), you: you, peers: peers, services: svc,
       inputs: { goal: I.goal || "conversion", traffic: I.traffic || "", ad: I.ad || "" }, ai: !!(ctx.insight && ctx.insight.questions),
       reads: { crawl: !!(ctx.crawl && ctx.crawl.pages), trust: !!(tr.facts), insight: !!(ctx.insight && ctx.insight.questions), peers: peers.length, side: !!ctx.side },
@@ -606,17 +687,156 @@
     if (!G.services.length) return "";
     return '<div class="tg-svc"><span class="an-label">How Troopod can help with your top levers</span><div class="tg-svc-grid">' + G.services.map(function (s) { return '<div class="tg-svc-card"><b>' + esc(s.n) + "</b><p>" + esc(s.why) + "</p></div>"; }).join("") + "</div></div>";
   }
+  /* ---------------- the pinned planner ---------------- */
+  /* the phone shows the page 262px wide with a 38px gutter on the right for pins, so pins never cover the page */
+  var PL_W = 300, PL_PAGE = 262, PL_VIS = 8;
+  var CHECK = '<svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0A0A0C" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  function gainTxt(g) { return g == null ? "n/a" : g === 0.5 ? "<1" : "+" + g; }
+  function rPlanRow(f, i) {
+    var extra = f.kind === "cro" && i >= PL_VIS;
+    return '<div class="pl-row' + (extra ? " pl-extra" : "") + '" data-fix="' + esc(f.id) + '"' + (extra ? " hidden" : "") + '><div class="pl-head">' +
+      '<button type="button" class="pl-check" aria-pressed="false" data-plan-check="' + esc(f.id) + '" aria-label="Add to plan: ' + esc(f.t) + '"><span class="pl-box">' + CHECK + "</span></button>" +
+      '<button type="button" class="pl-open" aria-expanded="false" data-plan-open="' + esc(f.id) + '"><span class="pl-num ' + f.kind + '">' + esc(f.label) + '</span><span class="pl-t">' + esc(f.t) + "</span>" +
+      '<span class="pl-g' + (f.gain == null ? " na" : "") + '" title="Overall points if you make only this fix">' + gainTxt(f.gain) + "</span></button></div>" +
+      '<div class="pl-body" hidden>' + (f.ev ? '<p><span class="k">Seen: </span>' + esc(f.ev) + "</p>" : "") + (f.fix ? '<p class="fx"><span class="k">Fix: </span>' + esc(f.fix) + "</p>" : "") +
+      '<p class="meta">' + esc([BR_NAME[f.pillar], f.partly ? "partly answered" : "", f.sev].filter(Boolean).join(" · ")) + "</p></div></div>";
+  }
+  function plPins(list, R) {
+    var RG = R.regions || {}, S = PL_PAGE / 390, last = -99, out = "";
+    var placed = list.map(function (f, i) { var key = RG[f.region] ? f.region : RG.content ? "content" : "title", r = RG[key]; return r ? { f: f, i: i, r: r, y: r.y * S } : null; }).filter(Boolean)
+      .sort(function (a, b) { return a.y - b.y || a.i - b.i; });
+    placed.forEach(function (p) {
+      var y = Math.max(p.y + 2, last + 30); last = y;
+      var r = p.r, hl = [Math.round(Math.max(0, r.x * S)), Math.round(r.y * S), Math.round(Math.min(r.w * S, PL_PAGE - Math.max(0, r.x * S))), Math.round(Math.max(18, r.h * S))].join(",");
+      var extra = p.f.kind === "cro" && p.i >= PL_VIS;
+      out += '<button type="button" class="pl-pin ' + p.f.kind + (extra ? " pl-extra" : "") + '" data-plan-pin="' + esc(p.f.id) + '" data-kind="' + p.f.kind + '" data-hl="' + hl + '" style="left:' + (PL_PAGE + 6) + "px;top:" + Math.round(y) + 'px"' + (p.f.kind !== "cro" || extra ? " hidden" : "") + ' aria-label="Problem ' + esc(p.f.label) + ": " + esc(p.f.t) + '">' + esc(p.f.label) + "</button>";
+    });
+    return out;
+  }
+  function vitTone(v, good, poor) { return v == null ? "" : v <= good ? "good" : v <= poor ? "mid" : "bad"; }
+  function rPlan(G, R) {
+    var Pl = G.plan; if (!Pl || !(Pl.cro.length + Pl.speed.length)) return "";
+    var V = Pl.vit, vit = "";
+    if (Pl.est || !V) vit = '<p class="pl-vnote">Google PageSpeed didn\'t answer in time for this scan, so speed is estimated from the page\'s code. Run the analysis again for real numbers.</p>';
+    else {
+      var cells = [["Main image shows at", V.lcp != null ? V.lcp.toFixed(1) + "s" : "n/a", "under 2.5s", vitTone(V.lcp, 2.5, 4)], ["Page frozen for", V.tbt != null ? V.tbt + "ms" : "n/a", "under 200ms", vitTone(V.tbt, 200, 600)], ["Layout shift", V.cls != null ? V.cls.toFixed(2) : "n/a", "under 0.1", vitTone(V.cls, 0.1, 0.25)]];
+      vit = '<div class="pl-vit">' + cells.map(function (c) { return '<div><span class="n">' + esc(c[0]) + '</span><b class="' + c[3] + '">' + esc(c[1]) + '</b><span class="g">good: ' + esc(c[2]) + "</span></div>"; }).join("") + "</div>" +
+        (V.field || V.kb ? '<p class="pl-vnote">' + (V.field ? "Real Chrome users (Google, last 28 days): " + esc(V.field.toLowerCase()) + ". " : "") + (V.kb ? "Page weight on a phone: " + (V.kb / 1024).toFixed(1) + " MB." : "") + "</p>" : "");
+    }
+    var nCro = Pl.cro.length, more = nCro > PL_VIS ? '<button type="button" class="pl-more" data-plan-more>Show ' + (nCro - PL_VIS) + " more</button>" : "";
+    var tabs = '<div class="pl-tabs" role="tablist" aria-label="Fix type">' +
+      '<button type="button" role="tab" aria-selected="true" data-plan-tab="cro"><span class="pl-tl"><i class="pl-dot cro"></i>CRO fixes <em>' + nCro + '</em></span><span class="pl-up">up to +' + Pl.upCro + "</span></button>" +
+      '<button type="button" role="tab" aria-selected="false" data-plan-tab="speed"><span class="pl-tl"><i class="pl-dot speed"></i>Speed fixes <em>' + Pl.speed.length + '</em></span><span class="pl-up">' + (Pl.est ? "estimated" : "up to +" + Pl.upSpeed) + "</span></button></div>";
+    var side = '<div class="pl-side">' + tabs + '<div class="pl-vits" data-plan-vitals hidden>' + vit + "</div>" +
+      '<div class="pl-hint"><p>Tick to add to your plan. Tap a fix to see why.</p><button type="button" class="pl-all" data-plan-all>Tick all CRO fixes</button></div>' +
+      '<div class="pl-list" data-plan-list="cro">' + (nCro ? Pl.cro.map(rPlanRow).join("") + more : '<p class="pl-empty">No CRO fixes left on this page.</p>') + "</div>" +
+      '<div class="pl-list" data-plan-list="speed" hidden>' + (Pl.speed.length ? Pl.speed.map(rPlanRow).join("") : '<p class="pl-empty">No speed problems flagged. Nice.</p>') + "</div></div>";
+    var H = R.pageH && R.regions ? Math.min(R.pageH, 6000) : 0, S = PL_PAGE / 390, shot = R.psi && R.psi.shots && R.psi.shots.final;
+    var screen = H ? '<div class="pl-canvas" data-plan-canvas data-h="' + H + '" style="height:' + Math.round(H * S) + 'px"><i class="pl-gutter" aria-hidden="true"></i><i class="pl-hl" data-plan-hl hidden></i>' + plPins(Pl.cro, R) + plPins(Pl.speed, R) + "</div>"
+      : '<div class="pl-canvas fallback">' + (shot ? '<img src="' + esc(shot) + '" alt="Your page on a phone, as Google loaded it">' : '<p>We couldn\'t draw this page here.</p>') + "</div>";
+    var phone = '<div class="pl-phone-col"><div class="pl-phone"><div class="pl-screen" data-plan-screen>' + screen + '</div></div><p class="pl-note" data-plan-note>' + (H ? "Your page on a phone, drawn without its scripts. Tap a number." : "We couldn't map where each problem sits on this page, so the list carries everything.") + "</p></div>";
+    return '<section class="rp-sec" id="rp-plan" data-plan>' + head("Your fixes", "Plan your fixes on the page itself", "Tick the fixes you'll make and the CRO, Speed and overall scores above update. The number on each fix is what it adds to the overall score on its own; fixes on the same pillar add a little less together. Estimates from the TrooCRO score model.") +
+      '<div class="pl-wrap">' + side + phone + "</div></section>";
+  }
+
   function render(G, R) {
     if (!G) return { html: "", nav: [] };
-    var html = rSnapshot(G, R) + rWeek(G) + rQuestions(G) + rLevers(G) + rPeers(G) + rConfirm(G);
-    var nav = [["rp-snapshot", "Snapshot", ""]];
-    if (G.week.length) nav.push(["rp-week", "Start here", G.week.length]);
+    var plan = rPlan(G, R);
+    var html = plan + rSnapshot(G, R) + (plan ? "" : rWeek(G)) + rQuestions(G) + rLevers(G) + rPeers(G) + rConfirm(G);
+    var nav = [];
+    if (plan) nav.push(["rp-plan", "Plan your fixes", G.plan.cro.length + G.plan.speed.length]);
+    nav.push(["rp-snapshot", "Snapshot", ""]);
+    if (!plan && G.week.length) nav.push(["rp-week", "Start here", G.week.length]);
     nav.push(["rp-questions", "Buyer questions", G.qs.filter(function (q) { return q.g === "no"; }).length], ["rp-levers", "Growth levers", G.levers.length]);
     if (G.peers.length) nav.push(["rp-peers", "Vs category leaders", G.peers.length]);
     if (G.confirm.length) nav.push(["rp-confirm", "Confirm with your team", G.confirm.length]);
     return { html: html, nav: nav, services: rServices(G) };
   }
-  function wire(root, G) {
+  function wirePlan(root, G, opts) {
+    var sec = root.querySelector("[data-plan]"); if (!sec || !G || !G.plan) return;
+    var Pl = G.plan, on = (Pl.defaultOn || []).slice(), tab = "cro", open = null, more = false;
+    function q(sel, r) { return (r || root).querySelector(sel); }
+    function qa(sel, r) { return Array.prototype.slice.call((r || root).querySelectorAll(sel)); }
+    function ids(kind) { return (kind === "speed" ? Pl.speed : Pl.cro).map(function (f) { return f.id; }); }
+    function setHTML(sel, h) { qa(sel).forEach(function (el) { el.innerHTML = h; }); }
+    function arrow(a, b) { return b != null && a != null && b !== a ? a + ' <span class="ar">→</span> <b class="to">' + b + "</b>" : (a == null ? "n/a" : String(a)); }
+    function upd() {
+      var pr = project(Pl.Mo, on), b = Pl.base, d = pr.overall - b.overall;
+      qa("[data-plan-check]").forEach(function (btn) { var id = btn.getAttribute("data-plan-check"), x = on.indexOf(id) >= 0; btn.setAttribute("aria-pressed", x ? "true" : "false"); var row = btn.closest(".pl-row"); if (row) row.classList.toggle("on", x); });
+      qa("[data-plan-pin]").forEach(function (p) { p.classList.toggle("picked", on.indexOf(p.getAttribute("data-plan-pin")) >= 0); });
+      setHTML("[data-plan-cro]", arrow(b.cro, pr.cro)); setHTML("[data-plan-speed]", arrow(b.speed, pr.speed));
+      qa("[data-plan-cro-bar]").forEach(function (el) { el.style.width = (pr.cro || 0) + "%"; }); qa("[data-plan-speed-bar]").forEach(function (el) { el.style.width = (pr.speed || 0) + "%"; });
+      qa("[data-plan-line]").forEach(function (el) {
+        el.hidden = false;
+        el.innerHTML = on.length ? "With your plan: <b>" + b.overall + ' <span class="ar">→</span> ' + pr.overall + "</b>" + (d > 0 ? ' <span class="up">+' + d + " pts</span>" : "") + ' <span class="n">· ' + on.length + (on.length === 1 ? " fix" : " fixes") + ' ticked · <a href="#rp-plan">edit</a></span>'
+          : 'Tick fixes in <a href="#rp-plan">Plan your fixes</a> to see your new score.';
+      });
+      var all = ids(tab), allOn = all.length && all.every(function (id) { return on.indexOf(id) >= 0; }), ab = q("[data-plan-all]");
+      if (ab) { ab.textContent = allOn ? "Untick all" : tab === "speed" ? "Tick all speed fixes" : "Tick all CRO fixes"; ab.hidden = !all.length; }
+    }
+    function setTab(k) {
+      tab = k;
+      qa("[data-plan-tab]").forEach(function (t) { t.setAttribute("aria-selected", t.getAttribute("data-plan-tab") === k ? "true" : "false"); });
+      qa("[data-plan-list]").forEach(function (l) { l.hidden = l.getAttribute("data-plan-list") !== k; });
+      var v = q("[data-plan-vitals]"); if (v) v.hidden = k !== "speed";
+      qa("[data-plan-pin]").forEach(function (p) { p.hidden = p.getAttribute("data-kind") !== k || (p.classList.contains("pl-extra") && !more); });
+      var hb = q("[data-plan-hl]"); if (hb) hb.hidden = true; open = null; qa(".pl-row").forEach(function (r) { r.classList.remove("open"); var bd = q(".pl-body", r); if (bd) bd.hidden = true; });
+      var n = q("[data-plan-note]"); if (n && q("[data-plan-canvas]")) n.textContent = k === "speed" ? "Speed problems slow the whole page. Pins show where shoppers feel them." : "Your page on a phone, drawn without its scripts. Tap a number.";
+      upd();
+    }
+    function setOpen(id, fromPin) {
+      open = open === id && !fromPin ? null : id;
+      qa(".pl-row").forEach(function (r) { var x = r.getAttribute("data-fix") === open; r.classList.toggle("open", x); var bd = q(".pl-body", r); if (bd) bd.hidden = !x; var ob = q("[data-plan-open]", r); if (ob) ob.setAttribute("aria-expanded", x ? "true" : "false"); });
+      qa("[data-plan-pin]").forEach(function (p) { p.classList.toggle("on", p.getAttribute("data-plan-pin") === open); });
+      var hlb = q("[data-plan-hl]"), pin0 = open ? q('[data-plan-pin="' + open + '"]') : null;
+      if (hlb) {
+        if (pin0 && !pin0.hidden && pin0.getAttribute("data-hl")) {
+          var v = pin0.getAttribute("data-hl").split(",").map(Number);
+          hlb.style.left = v[0] + "px"; hlb.style.top = v[1] + "px"; hlb.style.width = v[2] + "px"; hlb.style.height = v[3] + "px";
+          hlb.className = "pl-hl " + (pin0.getAttribute("data-kind") || "cro"); hlb.hidden = false;
+        } else hlb.hidden = true;
+      }
+      if (!open) return;
+      var pin = q('[data-plan-pin="' + open + '"]'), scr = q("[data-plan-screen]");
+      if (pin && scr && !pin.hidden) scr.scrollTo({ top: Math.max(0, pin.offsetTop - 140), behavior: "smooth" });
+      if (fromPin) { var row = q('.pl-row[data-fix="' + open + '"]'); if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+    }
+    sec.addEventListener("click", function (e) {
+      var t = e.target.closest ? e.target.closest("button") : null; if (!t || !sec.contains(t)) return;
+      var id;
+      if ((id = t.getAttribute("data-plan-check"))) { on = on.indexOf(id) >= 0 ? on.filter(function (x) { return x !== id; }) : on.concat([id]); upd(); return; }
+      if ((id = t.getAttribute("data-plan-open"))) { setOpen(id); return; }
+      if ((id = t.getAttribute("data-plan-pin"))) { var f = Pl.cro.concat(Pl.speed).filter(function (x) { return x.id === id; })[0]; if (f && f.kind !== tab) setTab(f.kind); setOpen(id, true); return; }
+      if ((id = t.getAttribute("data-plan-tab"))) { setTab(id); return; }
+      if (t.hasAttribute("data-plan-more")) { more = true; qa(".pl-extra").forEach(function (x) { if (!x.classList.contains("pl-pin") || x.getAttribute("data-kind") === tab) x.hidden = false; }); t.remove(); return; }
+      if (t.hasAttribute("data-plan-all")) { var a = ids(tab), allOn = a.every(function (x) { return on.indexOf(x) >= 0; }); on = allOn ? on.filter(function (x) { return a.indexOf(x) < 0; }) : on.concat(a.filter(function (x) { return on.indexOf(x) < 0; })); if (!allOn && !more) { var mb = q("[data-plan-more]"); if (mb) mb.click(); } upd(); return; }
+    });
+    setTab("cro");
+    /* the live page in the phone: the same script-free copy the scan measured */
+    var cv = q("[data-plan-canvas]"), H = cv ? +cv.getAttribute("data-h") : 0;
+    if (cv && H && opts && opts.view) Promise.resolve(opts.view()).then(function (v) {
+      if (!v || !v.html) { cv.classList.add("noview"); return; }
+      var S = PL_PAGE / 390, fr = document.createElement("iframe");
+      fr.setAttribute("sandbox", "allow-same-origin"); fr.setAttribute("title", "Your page on a phone"); fr.setAttribute("tabindex", "-1"); fr.setAttribute("aria-hidden", "true");
+      fr.className = "pl-frame"; fr.style.height = H + "px"; fr.style.transform = "scale(" + S + ")";
+      fr.srcdoc = v.html;
+      fr.addEventListener("load", function () {
+        try {
+          Array.prototype.forEach.call(fr.contentDocument.querySelectorAll("img"), function (im) {
+            var ds = im.getAttribute("data-src") || im.getAttribute("data-lazy-src") || im.getAttribute("data-original"), dss = im.getAttribute("data-srcset");
+            if (ds && (!im.getAttribute("src") || /data:image|placeholder|blank/i.test(im.getAttribute("src")))) im.setAttribute("src", ds.replace(/\{width\}/g, "800"));
+            if (dss && !im.getAttribute("srcset")) im.setAttribute("srcset", dss.replace(/\{width\}/g, "800"));
+            im.removeAttribute("loading");
+          });
+        } catch (e) { /* cross-origin: leave as is */ }
+        cv.classList.add("ready");
+      });
+      cv.insertBefore(fr, cv.firstChild);
+    }).catch(function () { cv.classList.add("noview"); });
+    else if (cv) cv.classList.add("noview");
+  }
+  function wire(root, G, opts) {
+    wirePlan(root, G, opts);
     var box = root.querySelector("[data-tg-money]"); if (!box || !G) return;
     var cur = box.getAttribute("data-cur");
     function upd() {
@@ -636,5 +856,5 @@
     return md;
   }
 
-  win.TrooGrowth = { catOf: catOf, pageText: pageText, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, NAMES: BR_NAME };
+  win.TrooGrowth = { catOf: catOf, pageText: pageText, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, NAMES: BR_NAME, project: project };
 })();

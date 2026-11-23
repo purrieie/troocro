@@ -275,6 +275,7 @@
     return sc;
   }
   function project(Mo, ids) {
+    if (Mo.v4) return project4(Mo, ids);
     var on = {}; (ids || []).forEach(function (id) { on[id] = 1; });
     var S = {}, pen = Mo.pen, cod = Mo.cod, a11y = Mo.a11y, fx = {};
     CRO_K.forEach(function (k) { S[k] = Mo.q[k] ? Mo.q[k].S : 0; });
@@ -454,14 +455,172 @@
     return { cat: cat, src: "detected" };
   }
 
+  /* ---------------- v12: house rules + shoppers ----------------
+     CRO = shoppers (4 personas Groq picked for this brand walk the page and say how likely they are to buy)
+         + house rules (8 hard facts a script can check). Speed as before. Overall = CRO^0.85 x Speed^0.15. */
+  var W4 = { shop: 0.3, proof: 0.5, rules: 0.2 };
+  /* The weighted mix is placed on a benchmark scale anchored on PDPs the Troopod team graded: weak pages (BSC, Bombae,
+     Fableroom) land around 30-55, good brands' pages (Moxie, Pilgrim, Candere, Inde Wild, boAt) around 70-80, the best
+     (Apple, Marshall, BlueStone) 85-90. Monotonic, so the order never changes; only the scale does. */
+  var CAL4 = [[0, 0], [25, 20], [40, 38], [52, 70], [60, 80], [75, 92], [100, 100]];
+  function cal4(x) { if (x == null) return null; for (var i = 1; i < CAL4.length; i++) { var a = CAL4[i - 1], b = CAL4[i]; if (x <= b[0]) return a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]); } return 100; }
+  var RULE_DEF = {
+    price: { t: "One clear price", bad: "The price or discount is confusing", region: "price", fix: "Show one price, the MRP it's cut from and one discount. Move the other offers below the button." },
+    agree: { t: "Page and policies agree", bad: "The page contradicts itself", region: "cta", fix: "Make every promise (discount, warranty, returns, delivery) say the same thing everywhere." },
+    first: { t: "First screen does the job", bad: "The first screen misses the basics", region: "title", fix: "Fit the photo, name, price and Add to cart into the first phone screen." },
+    reviews: { t: "Reviews shoppers can trust", bad: "Reviews are thin or hard to trust", region: "reviews", fix: "Show the rating and count under the name, and real reviews of this product, including a few critical ones." },
+    delivery: { t: "Delivery time near the button", bad: "No delivery time near the button", region: "cta", fix: "Show a delivery date (pincode check) right under Add to cart." },
+    returns: { t: "Returns are clear", bad: "Returns aren't clear", region: "cta", fix: "Say the return or exchange window in one line under Add to cart, with any exceptions." },
+    stock: { t: "Options in stock", bad: "Popular options are sold out", region: "cta", fix: "Restock the sold-out options, or offer a back-in-stock alert and the closest alternative." },
+    pressure: { t: "No fake pressure", bad: "Pressure that looks fake", region: "price", fix: "Use real end dates and real stock. Drop always-on countdowns and inflated MRPs." }
+  };
+  var RULE_ORDER = ["price", "agree", "first", "reviews", "delivery", "returns", "stock", "pressure"];
+  var OFFX = /(code|coupon|extra|above|over ₹|orders?\b|prepaid|upi|bank|cart value|purchase of|or more|buy \d|up ?to|upto|\bmin\b|minimum|first order|\bapp\b|sitewide|member|stone|making|on \d|items)/i;
+  var FISHY = /(no critical|no negative|no bad|only (?:5|five)|different product|other products?|not about|free product|sent me|exchange for|in exchange|gifted|same review|duplicate|repeated|another language|other language|french|german|store visitor|not verified|unverified)/i;
+  function rules4(R, ctx, qs, TR) {
+    var P = R.page || {}, tr = ctx.trust || {}, sh = ctx.shop || null, f = (R.cro && R.cro.f) || null, out = {};
+    function set(id, st, ev) { out[id] = { id: id, t: RULE_DEF[id].t, bad: RULE_DEF[id].bad, st: st, v: st === "pass" ? 1 : st === "partly" ? 0.5 : st === "fail" ? 0 : null, ev: ev || "", fix: RULE_DEF[id].fix, region: RULE_DEF[id].region }; }
+    var Q = {}; qs.forEach(function (q) { Q[q.id] = q; });
+    var main = ctx.text.main || "", h1 = (ctx.text.h1 || "").slice(0, 40), i0 = h1 ? main.indexOf(h1) : -1, top = main.slice(Math.max(0, i0), Math.max(0, i0) + 1500);
+    /* 1. one clear price */
+    var pc = {}, offers = 0, m, re = /(\d{1,2})\s?%\s?off/gi;
+    while ((m = re.exec(top))) { var cx = top.slice(Math.max(0, m.index - 45), m.index + 45); if (OFFX.test(cx)) offers++; else pc[+m[1]] = 1; }
+    offers += (top.match(/free (?:[a-z]+ ){0,3}(?:gift|minis?|pouch|sample)|cashback|use code/gi) || []).length;
+    var nb = (tr.numbers || []).filter(function (n) { return n.sev >= 2 && !(n.quote && OFFX.test(n.quote)); }), dp = Object.keys(pc).map(Number).sort(function (a, b) { return b - a; });
+    if (nb.length) set("price", "fail", nb[0].issue);
+    else if (dp.length >= 2 && dp[0] - dp[dp.length - 1] <= 15) set("price", "fail", "The price area shows " + dp.map(function (x) { return x + "% off"; }).join(" and ") + ". Shoppers can't tell which is real.");
+    else if (!P.prices && !(tr.product && tr.product.price) && !(sh && sh.stock && sh.stock.price)) set("price", "fail", "We couldn't find a price on the page.");
+    else if (offers >= 3) set("price", "partly", offers + " offers are stacked around the price, so the final price takes working out.");
+    else set("price", "pass", "One price and one discount.");
+    /* 2. page and policies agree */
+    var priceFailed = out.price && out.price.st === "fail";
+    var hard = TR.items.filter(function (i) { return (i.k === "contra" || i.k === "contra_ai") && i.st !== "confirm" && !(priceFailed && /discount|% ?off|price/i.test(i.t + " " + i.ev)); }), soft = TR.items.filter(function (i) { return i.k === "contra_exc"; });
+    if (hard.length) set("agree", "fail", hard[0].t.replace(/[.\s]+$/, "") + (hard.length > 1 ? " (+" + (hard.length - 1) + " more)" : "") + ". " + hard[0].ev);
+    else if (soft.length) set("agree", "partly", soft[0].t.replace(/[.\s]+$/, "") + ". " + soft[0].ev);
+    else set("agree", tr.facts || sh ? "pass" : "na", tr.facts || sh ? "No conflicts between the page and its policies." : "We couldn't read the policies.");
+    /* 3. first screen */
+    if (!f) set("first", "na", "We couldn't draw the page on a phone.");
+    else {
+      var photoKnown = !(f.gallery === 0 && !f.hero_ratio), parts = [["price", f.price_atf >= 0.5], ["Add to cart", f.cta_atf >= 0.5 || !!f.sticky_cta]];
+      if (photoKnown) parts.unshift(["a product photo", f.hero_ratio >= 0.3 || f.gallery >= 3]);
+      var miss = parts.filter(function (x) { return !x[1]; }).map(function (x) { return x[0]; });
+      set("first", !miss.length ? "pass" : miss.length === 1 ? "partly" : "fail", !miss.length ? "Photo, price and Add to cart show without scrolling." : "On a phone, " + miss.join(" and ") + " " + (miss.length === 1 ? "isn't" : "aren't") + " on the first screen.");
+    }
+    /* 4. reviews */
+    var rt = P.rating && P.rating.value ? P.rating : tr.reviews && tr.reviews.schema && tr.reviews.schema.value ? tr.reviews.schema : null;
+    if (!rt) { var mr = top.match(/\b([1-5](?:\.\d{1,2})?)\s*(?:\/\s*5|out of 5|★|stars?)?\s*[|(·]?\s*(?:from |based on )?([\d,]{1,7})\s*(?:\+\s*)?(?:verified )?(?:reviews|ratings)\b/i); if (mr && +mr[1] >= 1 && +mr[1] <= 5) rt = { value: +mr[1], count: +mr[2].replace(/,/g, "") }; }
+    var rv = sh && sh.reviews, cnt = rt ? +(rt.count || 0) : 0;
+    var apps = appsOf(R, ctx).reviews, known = sh && sh.brand_known === "household";
+    var strong = rv && rv.read >= 3 ? (rv.fishy || []).filter(function (x) { return FISHY.test(x); }) : [];
+    if (!rt) {
+      if (rv && rv.read >= 3) set("reviews", "partly", rv.read + " reviews are on the page but there's no overall rating near the name.");
+      else if (known) set("reviews", "na", "A household-name brand. Shoppers don't need reviews to trust it.");
+      else if (apps.length) set("reviews", "na", apps.join(", ") + " draws the reviews with JavaScript, so we couldn't read them.");
+      else set("reviews", "fail", "No rating or reviews on the page.");
+    } else {
+      var st = cnt >= 30 ? "pass" : cnt >= 5 || !cnt ? "partly" : "fail", ev = rt.value + "★" + (cnt ? " from " + cnt + " reviews" : "") + ".";
+      if (rv && rv.read >= 3 && (rv.about === false || strong.length)) { st = st === "pass" ? "partly" : "fail"; ev += " " + (rv.about === false ? "The reviews shown are about other products, not this one." : cap(strong[0]) + "."); }
+      else if (cnt && cnt < 5) ev += " Too few to trust.";
+      set("reviews", st, ev);
+    }
+    /* 5. delivery time */
+    var q9 = Q.B09, fa = tr.facts || {};
+    if (f && f.delivery_near) set("delivery", "pass", "Delivery information sits next to the button.");
+    else if (q9 && q9.g === "yes") set("delivery", "pass", (q9.ev[0] || "Delivery time is on the page."));
+    else if ((q9 && q9.g === "partly") || fa.deliveryDays) set("delivery", "partly", q9 && q9.g === "partly" && q9.ev[0] ? q9.ev[0] : "Delivery time is only in the shipping policy.");
+    else set("delivery", "fail", "We couldn't find a delivery time on the page.");
+    /* 6. returns */
+    var q8 = Q.B08 || Q.B50, cl = tr.claims || {}, restr = fa.noReturns || fa.exchangeOnly || fa.damagedOnly;
+    var stated = cl.returnDays || cl.easyReturns || (q8 && q8.g === "yes");
+    if (stated && !restr) set("returns", "pass", cl.returnDays ? "The page states " + cl.returnDays.days + "-day returns." : "Returns are stated on the page.");
+    else if (stated || restr || (q8 && q8.g === "partly") || (fa.returnDays || []).length) set("returns", "partly", restr ? "Returns are limited: “" + clip((restr.quote || ""), 110) + "”" : "Returns are mentioned but not stated plainly near the button.");
+    else set("returns", "fail", "We couldn't find a returns or exchange promise.");
+    /* 7. stock */
+    var sk = sh && sh.stock;
+    if (!sk) set("stock", "na", "We couldn't read stock for this store.");
+    else if (!sk.available) set("stock", "fail", "The product is sold out.");
+    else if (sk.soldOut && sk.soldOut.length) set("stock", sk.avail / Math.max(1, sk.variants) < 0.5 ? "fail" : "partly", "Sold out: " + (sk.option ? sk.option + " " : "") + sk.soldOut.join(", ") + ".");
+    else set("stock", "pass", sk.variants > 1 ? "All " + sk.variants + " options can be bought." : "In stock.");
+    /* 8. no fake pressure */
+    var fake = TR.items.filter(function (i) { return i.k === "fake_urgency"; }), timer = TR.items.filter(function (i) { return i.k === "timer_app" || i.k === "timer_text"; });
+    var px = sk && sk.price && sk.compareAt && sk.compareAt > sk.price ? Math.round(100 * (1 - sk.price / sk.compareAt)) : (tr.product && tr.product.compareAt && tr.product.price && tr.product.compareAt > tr.product.price ? Math.round(100 * (1 - tr.product.price / tr.product.compareAt)) : 0);
+    if (fake.length) set("pressure", "fail", fake[0].ev || fake[0].t);
+    else if (px >= 70) set("pressure", "partly", px + "% off the MRP every day reads as an inflated MRP." + (timer.length ? " Plus a countdown." : ""));
+    else if (timer.length) set("pressure", "partly", timer[0].t + ": " + (timer[0].ev || "") + " Make sure it's real.");
+    else set("pressure", "pass", "No countdowns or made-up stock numbers.");
+    return RULE_ORDER.map(function (k) { return out[k]; });
+  }
+  /* Proof on the page: what a careful shopper can actually check. Brand equity counts as proof for household names
+     and well-known premium brands (shoppers already trust them); everyone else has to show it on the page. */
+  var PROOF_RX = /clinical(?:ly)?|\bstud(?:y|ies)\b|volunteers|participants|subjects|dermatologist[- ](?:tested|approved)|lab[- ]tested|third[- ]party|certified|certificate|hallmark|\bbis\b|\bigi\b|\bgia\b|\bisi\b|fssai|\biso\b|\bgmp\b|ayush|patent/gi;
+  var INFO_RX = /how to use|directions|ingredients?|specifications?|dimensions|material|in the box|what.s inside|size chart|care (?:guide|instructions)|battery|playback|playtime|bluetooth|warranty|ipx\d|water[- ]resistant|compatib|purity|carat|karat|\d{2}kt|gold weight|net (?:weight|quantity)|shelf life|weight/gi;
+  function proof4(R, ctx, sh, rules) {
+    var P = R.page || {}, tr = ctx.trust || {}, t = String(ctx.text.main || "") + " " + String((tr.product && tr.product.desc) || ""), it = [], pts = 0;
+    function add(k, ok, n, label) { it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
+    var kinds = {}; (t.match(PROOF_RX) || []).forEach(function (m) { kinds[m.toLowerCase().slice(0, 6)] = 1; });
+    var nk = Object.keys(kinds).length;
+    add("tested", nk, nk >= 2 ? 25 : 12, "Tests, certificates or studies");
+    add("numbers", /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers)|tested on \d+|\d+ (?:volunteers|participants|subjects)/i.test(t), 10, "Results with numbers and a source");
+    add("verified", /verified (?:buyer|purchase|customer|review)|certified buyer/i.test(t), 15, "Verified-buyer reviews");
+    add("results", /\bday 0\b|before\s*(?:&|and|\/)\s*after|\bday \d{1,3}\b.{0,40}\bday \d{1,3}\b/i.test(t), 10, "Before and after results");
+    add("platforms", /(?:nykaa|amazon|flipkart|myntra|google)[^.]{0,40}(?:\d\.\d|rating)/i.test(t), 10, "Ratings on other platforms");
+    var rt = P.rating && P.rating.value ? P.rating : tr.reviews && tr.reviews.schema && tr.reviews.schema.value ? tr.reviews.schema : null, cnt = rt ? +(rt.count || 0) : 0;
+    if (!cnt) { var mr = t.match(/\b([\d,]{2,7})\s*(?:\+\s*)?(?:verified )?(?:reviews|ratings)\b/i); if (mr) cnt = +mr[1].replace(/,/g, ""); }
+    add("volume", cnt >= 30, cnt >= 500 ? 20 : cnt >= 100 ? 15 : 8, cnt ? cnt.toLocaleString("en-IN") + " reviews" : "30+ reviews");
+    var info = {}; (t.match(INFO_RX) || []).forEach(function (m) { info[m.toLowerCase().replace(/[^a-z]/g, "").slice(0, 6)] = 1; });
+    var ni = Object.keys(info).length;
+    add("info", ni >= 3, ni >= 6 ? 20 : 10, "Specs, ingredients and how-to as text");
+    var rv = sh && sh.reviews, fishy = rv && rv.read >= 3 && (rv.about === false || (rv.fishy || []).some(function (x) { return FISHY.test(x); }));
+    if (fishy) { pts -= 15; it.push({ k: "fishy", ok: false, bad: true, label: "Reviews look unreliable" }); }
+    var price = (sh && sh.stock && sh.stock.price) || (tr.product && tr.product.price) || P.aov || 0;
+    var minBuy = 0; (t.match(/(?:min(?:imum)?\.? (?:purchase|order)|orders? (?:above|over|worth)|purchase of)\s*(?:of\s*)?(?:rs\.?|₹|inr)?\s?([\d,]{3,6})/gi) || []).forEach(function (m) { var v = +(m.match(/([\d,]{3,6})\s*$/) || [0, "0"])[1].replace(/,/g, ""); if (v > minBuy) minBuy = v; });
+    var codes = (t.match(/use code|coupon code|\bcode\s*:?\s*[A-Z0-9]{4,}\b|click to copy|tap to copy/g) || []).length;
+    if (codes >= 2 || (price && minBuy >= 3 * price)) { pts -= 10; it.push({ k: "clutter", ok: false, bad: true, label: price && minBuy >= 3 * price ? "Offers for baskets far above this price" : "Coupon codes crowd the price" }); }
+    var raw = clamp(Math.round(pts), 0, 100), known = sh && sh.brand_known, tier = sh && sh.price_tier;
+    var carry = known === "household" ? 80 : known === "well-known" && (tier === "premium" || tier === "luxury") ? 75 : 0;
+    return { score: Math.max(raw, carry), raw: raw, carry: carry, known: known || "", tier: tier || "", items: it };
+  }
+  function shopScore(sh) {
+    if (!sh || !sh.personas || !sh.personas.length) return null;
+    var w = 0, s = 0; sh.personas.forEach(function (p) { w += p.fit; s += p.fit * p.buy; });
+    return w ? Math.round(s / w) : null;
+  }
+  function project4(Mo, ids) {
+    var on = {}; (ids || []).forEach(function (id) { on[id] = 1; });
+    var rs = Mo.rules.filter(function (r) { return r.v != null; }), fx = {};
+    var rv = rs.length ? 100 * rs.reduce(function (t, r) { return t + (on["r_" + r.id] ? 1 : r.v); }, 0) / rs.length : null;
+    var sw = 0, ss = 0; Mo.shop.forEach(function (p) { sw += p.fit; ss += p.fit * (on["p_" + p.id] ? Math.max(p.buy, p.to) : p.buy); });
+    var sv = sw ? ss / sw : null;
+    Mo.fixes.forEach(function (f) { if (on[f.id] && LH_W[f.e.t]) fx[f.e.t] = 1; });
+    var pv = Mo.proof == null ? null : on.p_proof ? Math.max(Mo.proof, Mo.proofTo || Mo.proof) : Mo.proof;
+    var parts = [[sv, Mo.wS], [pv, Mo.wP], [rv, Mo.wR]].filter(function (x) { return x[0] != null; }), pw = parts.reduce(function (t, x) { return t + x[1]; }, 0);
+    var mix = pw ? parts.reduce(function (t, x) { return t + x[0] * x[1]; }, 0) / pw : null, croX = cal4(mix), cro = croX == null ? null : Math.round(croX);
+    var spd = speedOf(Mo.sp, fx);
+    var x = cro == null ? null : spd == null ? cro : Math.exp(0.85 * Math.log(Math.max(5, croX)) + 0.15 * Math.log(Math.max(5, spd)));
+    var overall = cro == null ? null : spd == null ? cro : Math.round(Math.exp(0.85 * Math.log(Math.max(5, cro)) + 0.15 * Math.log(Math.max(5, spd))));
+    return { P: { rules: rv == null ? null : Math.round(rv), shoppers: sv == null ? null : Math.round(sv), proof: pv, speed: spd, mix: mix == null ? null : Math.round(mix) }, cro: cro, speed: spd, overall: overall, x: x };
+  }
+  function unreadOf(R, ctx) {
+    var P = R.page || {}, t = ctx.text || {}, tr = ctx.trust || {};
+    var wall = /(access denied|are you a robot|verify you are human|captcha|request (?:was )?blocked|unusual traffic|enable javascript|site can.t be reached|something went wrong|temporarily unavailable|attention required|just a moment)/i;
+    var txt = String(t.main || "") + " " + String(P.title || "");
+    if (wall.test(txt.slice(0, 600)) && String(t.main || "").length < 2500) return "The site blocked our reader, so we only saw a check page, not the product.";
+    if (String(t.main || "").length < 600 && !(tr.product && tr.product.title)) return "This page builds itself with JavaScript, and our reader only saw an empty shell.";
+    return null;
+  }
+
   /* ---------------- build ---------------- */
   function build(R, ctx) {
     ctx = ctx || {}; ctx.text = ctx.text || { all: "", main: "", h1: "" };
     var P = R.page || {}, I = R.inputs || {};
     var tr = ctx.trust || {}, prod = tr.product || {};
     var co = catOf(R, ctx), cat = co.cat, catSrc = co.src;
+    var shc = ctx.shop && ctx.shop.category;
+    if (shc && LIB.cats[shc] && catSrc !== "you" && !P.lead && shc !== cat) { cat = shc; catSrc = "ai"; }
     var sub = subOf(cat, [P.title, ctx.text.h1, prod.title, prod.type, (prod.tags || []).join(" "), (P.h1 || []).join(" ")].join(" ") + " " + ctx.text.main.slice(0, 3000));
-    var mk = marketOf(R), season = seasonOf(mk);
+    var mk = marketOf(R);
+    if (ctx.shop && ctx.shop.market === "IN" && mk !== "IN") mk = "IN";
+    var season = seasonOf(mk);
     ctx.mk = mk;
     ctx.season = season;
     ctx.adMatch = adMatchOf(I.ad, R, ctx.text); ctx.traffic = I.traffic || "";
@@ -581,15 +740,86 @@
     });
     var vis = qs.filter(function (q) { return q.id === "B01" && q.g !== "yes"; })[0];
     if (vis && /Jewellery|Home|Electronics|Fashion|Beauty/.test(cat)) addS("Troo3D", "An interactive 3D view of the product, so shoppers can see exactly what they'll get.");
-    return {
+    var res = {
       v: 1, at: new Date().toISOString(), cat: cat, sub: sub, catSrc: catSrc, market: mk, season: season, lead: lead,
       product: (ctx.insight && ctx.insight.product) || prod.title || P.title || "", buyer: (ctx.insight && ctx.insight.buyer) || "",
       score: gscore, cro: gCro ? gCro.v : null, speed: gSp ? gSp.v : null, croW: gCro && gAll ? Math.round(1000 * gCro.w / gAll.w) / 10 : null, speedW: gSp && gAll ? Math.round(1000 * gSp.w / gAll.w) / 10 : null,
       parts: parts, side: side, scoreV: 3, mustNo: mustNo, qScore: qscore, layout: croS, plan: plan,
       one: one, qs: pq.concat(qs), branches: B, money: money, levers: L, week: week, confirm: confirm.slice(0, 8), you: you, peers: peers, services: svc,
       inputs: { goal: I.goal || "conversion", traffic: I.traffic || "", ad: I.ad || "" }, ai: !!(ctx.insight && ctx.insight.questions),
-      reads: { crawl: !!(ctx.crawl && ctx.crawl.pages), trust: !!(tr.facts), insight: !!(ctx.insight && ctx.insight.questions), peers: peers.length, side: !!ctx.side },
+      reads: { crawl: !!(ctx.crawl && ctx.crawl.pages), trust: !!(tr.facts), insight: !!(ctx.insight && ctx.insight.questions), peers: peers.length, side: !!ctx.side, shop: !!(ctx.shop && ctx.shop.personas) },
     };
+    /* v12: CRO = shoppers + house rules */
+    var sh = ctx.shop && ctx.shop.personas && ctx.shop.personas.length ? ctx.shop : null;
+    var rules = rules4(R, ctx, qs, TR), rApp = rules.filter(function (r) { return r.v != null; });
+    var rScore = rApp.length ? Math.round(100 * rApp.reduce(function (t, r) { return t + r.v; }, 0) / rApp.length) : null, sScore = shopScore(sh);
+    var PF = proof4(R, ctx, sh, rules);
+    var missP = PF.items.filter(function (i) { return !i.ok && !i.bad; }).map(function (i) { return i.label.toLowerCase(); });
+    var proofTo = PF.carry >= PF.raw ? PF.score : Math.min(100, PF.score + 25);
+    var Mo4 = { v4: true, proof: PF.score, proofTo: proofTo, wP: W4.proof, rules: rules.map(function (r) { return { id: r.id, v: r.v }; }), shop: sh ? sh.personas.map(function (p) { return { id: p.id, fit: p.fit, buy: p.buy, to: p.fix && p.fix.to != null ? p.fix.to : p.buy }; }) : [], wS: W4.shop, wR: W4.rules, sp: Mo.sp, fixes: [] };
+    var fx4 = [];
+    rules.forEach(function (r) { if (r.st === "fail" || r.st === "partly") fx4.push({ id: "r_" + r.id, kind: "cro", pillar: "rules", t: r.bad, ev: r.ev, fix: r.fix, sev: r.st === "fail" ? "Must solve" : "Should solve", partly: r.st === "partly", region: r.region, e: { t: "rule" } }); });
+    if (PF.score < 60 && missP.length) fx4.push({ id: "p_proof", kind: "cro", pillar: "proof", t: "Show proof shoppers can check", ev: "Missing: " + missP.slice(0, 4).join(", ") + ".", fix: "Add what this product can prove: test or certificate results with numbers, verified-buyer reviews with photos, before and after, ratings from Nykaa or Amazon.", sev: PF.score < 35 ? "Must solve" : "Should solve", region: "reviews", e: { t: "proof" } });
+    (sh ? sh.personas : []).forEach(function (p) { if (p.fix && p.fix.change && p.fix.to > p.buy) fx4.push({ id: "p_" + p.id, kind: "cro", pillar: "shoppers", t: cap(p.fix.change), ev: p.n + ": “" + (p.leave || "") + "”", fix: "", sev: p.fit >= 30 ? "Must solve" : "Should solve", region: "content", e: { t: "persona" } }); });
+    var sp4 = plan.speed;
+    Mo4.fixes = fx4.concat(sp4).map(function (f) { return { id: f.id, e: f.e }; });
+    var b4 = project4(Mo4, []);
+    fx4.concat(sp4).forEach(function (f) { if (f.nogain) { f.gain = null; return; } var d = project4(Mo4, [f.id]).x - b4.x; f.gain = d >= 0.5 ? Math.round(d) : d > 0.05 ? 0.5 : 0; });
+    var byG4 = function (a, b) { return (b.gain || 0) - (a.gain || 0) || (a.sev === "Must solve" ? -1 : 0) - (b.sev === "Must solve" ? -1 : 0); };
+    fx4.sort(byG4); sp4.sort(byG4);
+    fx4.forEach(function (f, i) { f.label = String(i + 1); }); sp4.forEach(function (f, i) { f.label = "S" + (i + 1); });
+    var up4 = function (a) { return a.length ? project4(Mo4, a.map(function (f) { return f.id; })).overall - b4.overall : 0; };
+    res.plan = { Mo: Mo4, base: { overall: b4.overall, cro: b4.cro, speed: b4.speed }, cro: fx4, speed: sp4, upCro: up4(fx4), upSpeed: up4(sp4),
+      defaultOn: fx4.concat(sp4).filter(function (f) { return f.gain > 0; }).sort(byG4).slice(0, 3).map(function (f) { return f.id; }), vit: plan.vit, est: plan.est };
+    res.score = b4.overall; res.cro = b4.cro; res.speed = b4.speed; res.croW = 85; res.speedW = 15;
+    res.top3 = res.plan.defaultOn.length ? { from: b4.overall, to: project4(Mo4, res.plan.defaultOn).overall } : null;
+    var wsum = (sScore == null ? 0 : W4.shop) + W4.proof + (rScore == null ? 0 : W4.rules), wOf = function (w) { return Math.round(850 * w / wsum) / 10; };
+    res.parts = [{ id: "shoppers", w: wOf(W4.shop), v: sScore, grp: "cro" }, { id: "proof", w: wOf(W4.proof), v: PF.score, grp: "cro" }, { id: "rules", w: wOf(W4.rules), v: rScore, grp: "cro" }, { id: "speed", w: 15, v: b4.speed, est: !!B.speed.est, grp: "speed" }].filter(function (p) { return p.v != null; });
+    res.mix = b4.P.mix; res.scoreV = 4; res.rules = rules; res.rulesScore = rScore; res.shop = sh; res.shopScore = sScore; res.proof = PF; res.w4 = { shop: sScore == null ? 0 : W4.shop / wsum, proof: W4.proof / wsum, rules: rScore == null ? 0 : W4.rules / wsum };
+    if (sh) { if (sh.one_liner) res.one = { text: sh.one_liner, src: "ai" }; if (sh.product) res.product = sh.product; if (sh.buyer) res.buyer = sh.buyer; res.brandKnown = sh.brand_known; }
+    res.unread = unreadOf(R, ctx);
+    if (res.unread) { res.score = null; res.cro = null; res.parts = []; }
+    return res;
+  }
+
+  /* ---------------- v12 short report: shoppers, top 3 fixes, house rules ---------------- */
+  function buyWord(b) { return b >= 85 ? "Buys now" : b >= 70 ? "Likely to buy" : b >= 55 ? "Leaning yes" : b >= 40 ? "On the fence" : b >= 25 ? "Leaves to compare" : "Leaves"; }
+  var A_ICON = { yes: "✓", partly: "!", no: "✕" }, R_ICON = { pass: "✓", partly: "!", fail: "✕", na: "–" };
+  function rCard(p) {
+    var n = { yes: 0, partly: 0, no: 0 }; (p.checks || []).forEach(function (c) { n[c.a]++; });
+    return '<article class="sh-card"><div class="sh-top"><div class="sh-who"><b>' + esc(p.n) + '</b><span>' + p.fit + '% of your shoppers</span></div>' +
+      '<div class="sh-buy" style="color:' + colorOf(p.buy) + '"><b>' + p.buy + '</b><span>' + esc(buyWord(p.buy)) + "</span></div></div>" +
+      '<p class="sh-q">“' + esc(p.leave || p.voice) + "”</p>" +
+      (p.fix && p.fix.change && p.fix.to > p.buy ? '<p class="sh-fix"><span>' + p.buy + " → " + p.fix.to + " if:</span> " + esc(p.fix.change) + "</p>" : "") +
+      '<details class="sh-more"><summary>What they checked <em class="y">✓ ' + n.yes + '</em><em class="p">! ' + n.partly + '</em><em class="n">✕ ' + n.no + "</em></summary><ul>" +
+      (p.checks || []).map(function (c) { return '<li class="a-' + c.a + '"><i>' + A_ICON[c.a] + "</i><span>" + esc(c.q) + (c.quote ? '<em>“' + esc(clip(c.quote, 110)) + "”</em>" : "") + "</span></li>"; }).join("") + "</ul></details></article>";
+  }
+  function rShort(G, R) {
+    if (!G || G.scoreV !== 4) return "";
+    if (G.unread) return '<section class="rp-sec sh-unread" id="rp-shoppers">' + head("We couldn't read this page", "No score for this page", esc(G.unread) + " Scoring an empty or blocked page would be wrong, so we haven't. Try the brand's own product URL, or a page that loads without a login or check screen.") + "</section>";
+    var sh = G.shop, h = "", Pl = G.plan;
+    if (sh && sh.personas && sh.personas.length) {
+      var rv = sh.reviews || {};
+      h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Shoppers", "4 shoppers walked your page", "Picked for who buys " + esc(clip(G.product || "this product", 60)) + ". Each read the page and said how likely they are to buy, weighted by how many shoppers like them you get: " + G.shopScore + "/100, " + Math.round(100 * ((G.w4 && G.w4.shop) || 0.35)) + "% of the CRO score.") +
+        '<div class="sh-grid">' + sh.personas.map(rCard).join("") + "</div>" +
+        (rv.read ? '<p class="sh-rv"><b>From your reviews:</b> ' + esc(rv.summary || "") + (rv.doubts && rv.doubts.length ? " Buyers keep asking: " + esc(rv.doubts.join("; ")) + "." : "") + "</p>" : "") + "</section>";
+    } else h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Shoppers", "Shoppers couldn't walk this page this time", "The shopper read didn't come back for this scan (our free AI quota may be busy), so the CRO score uses the house rules alone. Run it again in a few minutes for the full read.") + "</section>";
+    var byG = function (a, b) { return (b.gain || 0) - (a.gain || 0); };
+    var top = Pl ? Pl.cro.concat(Pl.speed).filter(function (f) { return f.gain > 0; }).sort(byG).slice(0, 3) : [];
+    if (top.length) h += '<section class="rp-sec tf" id="rp-top">' + head("Do these first", "Your top " + top.length + " fixes", "Each number is what that fix alone adds to your overall score." + (G.top3 && G.top3.to > G.top3.from ? " All " + top.length + " together: " + G.top3.from + " → " + G.top3.to + "." : "")) +
+      '<ol class="tf-list">' + top.map(function (f, i) {
+        return '<li><span class="tf-n ' + f.kind + '">' + (i + 1) + '</span><div class="tf-b"><b>' + esc(f.t) + "</b>" + (f.ev ? "<span>" + esc(clip(f.ev, 200)) + "</span>" : "") + (f.fix ? '<span class="fx">Fix: ' + esc(f.fix) + "</span>" : "") + '</div><span class="tf-g">' + gainTxt(f.gain) + "</span></li>";
+      }).join("") + "</ol></section>";
+    var PF = G.proof;
+    if (PF) {
+      var pw = Math.round(100 * ((G.w4 && G.w4.proof) || 0.4));
+      h += '<section class="rp-sec pf" id="rp-proof">' + head("Proof", "Proof on the page: " + PF.score + "/100", (PF.carry && PF.carry >= PF.raw ? "Shoppers already know " + esc((G.shop && G.shop.brand) || "this brand") + (PF.tier === "premium" || PF.tier === "luxury" ? " as a " + esc(PF.tier) + " brand" : "") + ", so the name does most of the proving. On the page itself: " + PF.raw + "/100. " : "What a careful shopper can actually check before paying. ") + pw + "% of the CRO score.") +
+        '<div class="pf-row">' + PF.items.map(function (i) { return '<span class="pf-i ' + (i.bad ? "bad" : i.ok ? "ok" : "no") + '"><i>' + (i.bad ? "✕" : i.ok ? "✓" : "–") + "</i>" + esc(i.label) + "</span>"; }).join("") + "</div></section>";
+    }
+    var rl = G.rules || [], app = rl.filter(function (r) { return r.st !== "na"; }), ok = app.filter(function (r) { return r.st === "pass"; }).length;
+    h += '<section class="rp-sec rl" id="rp-rules">' + head("House rules", ok + " of " + app.length + " basics in place", "Hard facts we check on every product page. Together they make up " + Math.round(100 * ((G.w4 && G.w4.rules) || 0.25)) + "% of the CRO score: " + (G.rulesScore == null ? "n/a" : G.rulesScore + "/100") + ".") +
+      '<div class="rl-grid">' + rl.map(function (r) { return '<div class="rl-i ' + r.st + '"><i>' + R_ICON[r.st] + '</i><div><b>' + esc(r.t) + "</b><span>" + esc(clip(r.ev, 170)) + "</span></div></div>"; }).join("") + "</div></section>";
+    return h;
   }
 
   /* ---------------- render ---------------- */
@@ -626,7 +856,7 @@
     });
     return '<section class="rp-sec" id="rp-questions">' + head("Buyer questions", "What " + esc(G.cat === "Other" ? "shoppers" : G.cat.toLowerCase() + " shoppers") + " ask before they pay", "The doubts " + (G.sub ? esc(G.sub.toLowerCase()) + " " : "") + "buyers have, from the Troopod barrier library" + (G.ai ? " plus questions written for this exact product" : "") + ", checked against what your page actually says. Must-solve doubts stop the sale.") + h + "</section>";
   }
-  var BR_NAME = { clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", speed: "Speed on phone", flow: "Focus & flow", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
+  var BR_NAME = { rules: "House rules", shoppers: "Shoppers", proof: "Proof on the page", clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", speed: "Speed on phone", flow: "Focus & flow", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
   var BR_Q = { clarity: "Do shoppers understand what they get and that it suits them?", trust: "Do shoppers feel safe buying here?", price: "Do shoppers see the full price, delivery date and how to pay?", speed: "Does the page load fast on a phone?", flow: "Is the path to buy clear, and does the page match the ad?", discover: "Can Google and AI assistants find you?", aov: "Does the page invite a bigger basket?", retain: "Will first-time buyers come back?" };
   function rItem(i) {
     var cls = i.st === "ok" ? "ok" : i.st === "confirm" ? "confirm" : i.st === "bad" ? "bad" : "warn";
@@ -750,7 +980,7 @@
     nav.push(["rp-questions", "Buyer questions", G.qs.filter(function (q) { return q.g === "no"; }).length], ["rp-levers", "Growth levers", G.levers.length]);
     if (G.peers.length) nav.push(["rp-peers", "Vs category leaders", G.peers.length]);
     if (G.confirm.length) nav.push(["rp-confirm", "Confirm with your team", G.confirm.length]);
-    return { html: html, nav: nav, services: rServices(G) };
+    return { html: html, nav: nav, services: rServices(G), short: rShort(G, R) };
   }
   function wirePlan(root, G, opts) {
     var sec = root.querySelector("[data-plan]"); if (!sec || !G || !G.plan) return;
@@ -768,7 +998,11 @@
       qa("[data-plan-cro-bar]").forEach(function (el) { el.style.width = (pr.cro || 0) + "%"; }); qa("[data-plan-speed-bar]").forEach(function (el) { el.style.width = (pr.speed || 0) + "%"; });
       qa("[data-plan-line]").forEach(function (el) {
         el.hidden = false;
-        el.innerHTML = on.length ? "With your plan: <b>" + b.overall + ' <span class="ar">→</span> ' + pr.overall + "</b>" + (d > 0 ? ' <span class="up">+' + d + " pts</span>" : "") + ' <span class="n">· ' + on.length + (on.length === 1 ? " fix" : " fixes") + ' ticked · <a href="#rp-plan">edit</a></span>'
+
+        var dflt = Pl.Mo && Pl.Mo.v4 && on.length && on.length === (Pl.defaultOn || []).length && on.every(function (x) { return Pl.defaultOn.indexOf(x) >= 0; });
+        el.hidden = !!(Pl.Mo && Pl.Mo.v4 && !on.length);
+        el.innerHTML = dflt ? "With your top " + on.length + " fixes: <b>" + b.overall + ' <span class="ar">→</span> ' + pr.overall + "</b>" + (d > 0 ? ' <span class="up">+' + d + " pts</span>" : "") + ' <span class="n">· <a href="#rp-top">see them</a></span>'
+          : on.length ? "With your plan: <b>" + b.overall + ' <span class="ar">→</span> ' + pr.overall + "</b>" + (d > 0 ? ' <span class="up">+' + d + " pts</span>" : "") + ' <span class="n">· ' + on.length + (on.length === 1 ? " fix" : " fixes") + ' ticked · <a href="#rp-plan">edit</a></span>'
           : 'Tick fixes in <a href="#rp-plan">Plan your fixes</a> to see your new score.';
       });
       var all = ids(tab), allOn = all.length && all.every(function (id) { return on.indexOf(id) >= 0; }), ab = q("[data-plan-all]");
@@ -850,7 +1084,9 @@
   }
   function markdown(G) {
     if (!G) return "";
-    var md = "\n## TrooGrowth\n\n" + "Overall " + G.score + "/100 (CRO " + G.cro + "/100, " + G.croW + "%; speed " + G.speed + "/100, " + G.speedW + "%).\n\n" + (G.one ? "**Biggest problem:** " + G.one.text + "\n\n" : "") + "Category: " + G.cat + (G.sub ? " > " + G.sub : "") + ". Season: " + G.season.name + ".\n\n### Three things this week\n" + G.week.map(function (w, i) { return (i + 1) + ". " + w.title + " (" + (BR_NAME[w.branch] || "") + ")"; }).join("\n") + "\n\n### Buyer questions\n";
+    var md = "\n## TrooGrowth\n\n" + "Overall " + G.score + "/100 (CRO " + G.cro + "/100, " + G.croW + "%; speed " + G.speed + "/100, " + G.speedW + "%).\n\n" + (G.one ? "**Biggest problem:** " + G.one.text + "\n\n" : "") +
+      (G.scoreV === 4 && G.shop ? "### Shoppers (" + G.shopScore + "/100)\n" + G.shop.personas.map(function (p) { return "- **" + p.n + "** (" + p.fit + "% of shoppers): " + p.buy + "/100. \u201c" + p.leave + "\u201d" + (p.fix && p.fix.change ? " Fix: " + p.fix.change : ""); }).join("\n") + "\n\n" : "") +
+      (G.scoreV === 4 && G.rules ? "### House rules (" + G.rulesScore + "/100)\n" + G.rules.map(function (r) { return "- [" + r.st + "] " + r.t + ": " + r.ev; }).join("\n") + "\n\n" : "") + "Category: " + G.cat + (G.sub ? " > " + G.sub : "") + ". Season: " + G.season.name + ".\n\n### Three things this week\n" + G.week.map(function (w, i) { return (i + 1) + ". " + w.title + " (" + (BR_NAME[w.branch] || "") + ")"; }).join("\n") + "\n\n### Buyer questions\n";
     G.qs.forEach(function (q) { md += "- [" + G_LABEL[q.g] + "] " + q.q + (q.g !== "yes" && q.fix ? " Fix: " + q.fix : "") + "\n"; });
     md += "\n### Growth levers\n"; G.levers.forEach(function (l) { md += l.rank + ". " + l.name + ": " + l.score + "/100, 10% better is worth " + moneyFmt(l.inr10, G.money.cur) + "/month\n"; });
     return md;

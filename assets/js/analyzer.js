@@ -740,12 +740,30 @@
     return Promise.race([p, skipP]);
   }
   /* TrooGrowth reads (troogrowth edge function): site crawl, trust check, product questions, category leaders */
-  function gapi(path, body, timeout) {
-    var G = String(CFG.growth || "").replace(/\/+$/, "");
+  function gapi(path, body, timeout, base) {
+    var G = String(base || CFG.growth || "").replace(/\/+$/, "");
     if (!G || !win.AbortController) return Promise.resolve(null);
     var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, timeout || 60000);
     var init = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal } : { signal: ctl.signal };
     return fetch(G + path, init).then(function (r) { return r.json(); }).then(function (d) { clearTimeout(t); return d && !d.error && !d.fallback ? d : null; }).catch(function () { clearTimeout(t); return null; });
+  }
+  /* plain facts our scripts checked, handed to the shopper personas so they react to them */
+  function shopFacts(r, tr) {
+    var p = r.page || {}, f = tr.facts || {}, cl = tr.claims || {}, out = [];
+    var rt = p.rating && p.rating.value ? p.rating : tr.reviews && tr.reviews.schema ? tr.reviews.schema : null;
+    if (rt) out.push("Rating shown: " + rt.value + (rt.count ? " from " + rt.count + " reviews" : ""));
+    if (cl.returnDays) out.push("The page promises " + cl.returnDays.days + "-day returns");
+    if (f.noReturns) out.push("Policy: " + f.noReturns.quote);
+    else if (f.damagedOnly) out.push("Policy: returns only for damaged or wrong items");
+    if (f.exchangeOnly) out.push("Policy: " + f.exchangeOnly.quote);
+    if (f.deliveryDays) out.push("Shipping policy: delivery in " + f.deliveryDays[0] + "-" + f.deliveryDays[1] + " days");
+    if (f.freeShipAbove) out.push("Free shipping above " + f.freeShipAbove);
+    if (f.codFee) out.push("Cash on delivery costs extra: " + f.codFee);
+    (tr.contradictions || []).slice(0, 2).forEach(function (c) { out.push("Conflict: " + c.issue); });
+    (tr.numbers || []).filter(function (n) { return !(n.quote && /(code|coupon|extra|above|orders?\b|prepaid|upi|bank|purchase of|or more|buy \d|up ?to|items)/i.test(n.quote)); }).slice(0, 2).forEach(function (n) { out.push("Numbers: " + n.issue + (n.quote ? " (\"" + n.quote + "\")" : "")); });
+    (tr.urgency || []).slice(0, 1).forEach(function (u) { out.push("Urgency: " + u.text); });
+    if (tr.product && tr.product.compareAt && tr.product.price && tr.product.compareAt > tr.product.price) out.push("Price " + tr.product.price + ", MRP " + tr.product.compareAt + " (" + Math.round(100 * (1 - tr.product.price / tr.product.compareAt)) + "% off)");
+    return out.slice(0, 12);
   }
   function startGrowthReads() {
     var gx = S.gx = { t0: Date.now() };
@@ -759,19 +777,29 @@
     var p = r.page || {}, mk = win.TrooGrowth.marketOf(r);
     var catP = gx.textP.then(function (t) { return win.TrooGrowth.catOf({ page: p, inputs: S.inputs }, { text: t || {} }).cat; });
     gx.peersP = catP.then(function (cat) { return cat && cat !== "Other" ? gapi("/peers?cat=" + encodeURIComponent(cat) + "&market=" + mk + "&exclude=" + encodeURIComponent(hostOf(r.url)), null, 30000) : null; });
-    gx.insightP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP]).then(function (x) {
-      var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[2] || "";
+    /* v12: 4 shopper personas walk the page (troogrowth-shop: Groq reader + reviews + shoppers) */
+    gx.insightP = Promise.resolve(null);
+    /* the shoppers also look at the first screen: Google PageSpeed's phone screenshot, so this waits for PageSpeed */
+    var shotP = Promise.race([Promise.resolve(S.psiP).then(function (ps) { var f = ps && ps.shots && ps.shots.final; return typeof f === "string" && /^data:image\//.test(f) && f.length < 160000 ? f : ""; }).catch(function () { return ""; }), sleep(170000).then(function () { return ""; })]);
+    gx.shopP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP, shotP]).then(function (x) {
+      var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[2] || "", shot = x[3] || "";
       if (!t || !t.main || t.main.length < 300) return null;
       var text = (prod.desc && t.main.indexOf(prod.desc.slice(0, 40)) < 0 ? prod.desc.slice(0, 1200) + " " : "") + t.main;
       var sub = win.TrooGrowth.subOf(cat, [p.title, t.h1, prod.title, prod.type].join(" "));
-      return gapi("/insight", { url: r.url, category: cat, sub: sub || "", market: mk, pageType: p.pageType, title: p.title, product: prod.title || t.h1 || "", price: prod.price ? (p.currency === "USD" ? "$" : "Rs ") + prod.price : p.aov ? (p.currency === "USD" ? "$" : "Rs ") + p.aov : "", text: text.slice(0, 4500), policy: tr.policyText || "" }, 45000);
+      var i0 = t.h1 ? t.main.indexOf(t.h1.slice(0, 40)) : -1, first = t.main.slice(Math.max(0, i0 - 200), Math.max(0, i0 - 200) + 700);
+      var rt = p.rating && p.rating.value ? p.rating : tr.reviews && tr.reviews.schema ? tr.reviews.schema : null;
+      gx.shopT0 = Date.now();
+      return gapi("/shop", { url: r.url, category: cat, sub: sub || "", market: mk, currency: p.currency || "", pageType: p.pageType, title: p.title, product: prod.title || t.h1 || "", price: prod.price ? (p.currency === "USD" ? "$" : p.currency === "GBP" ? "£" : "Rs ") + prod.price : p.aov ? (p.currency === "USD" ? "$" : "Rs ") + p.aov : "", text: text.slice(0, 6000), first: first, policy: tr.policyText || "", facts: shopFacts(r, tr), rating: rt, shot: shot, t: CFG.shopTest || undefined }, 90000, CFG.shop || String(CFG.growth || "").replace(/\/+$/, "") + "-shop");
     });
   }
   async function growthCtx(capMs) {
     var gx = S.gx || {}, cap = function (pr, ms) { return Promise.race([pr || Promise.resolve(null), sleep(ms).then(function () { return null; })]); };
     var left = Math.max(4000, capMs);
-    var x = await Promise.all([cap(gx.textP, 3000), cap(gx.crawlP, left), cap(gx.trustP, left), cap(gx.insightP, left), cap(gx.peersP, left)]);
-    return { text: x[0] || { all: "", main: "", h1: "" }, crawl: x[1], trust: x[2] && !x[2].error ? x[2] : null, insight: x[3], peers: x[4], side: S.sideTxt || "", sideMain: S.sideMain || "" };
+    var shopLeft = Math.max(left, gx.shopT0 ? 75000 - (Date.now() - gx.shopT0) : 45000);
+    var x = await Promise.all([cap(gx.textP, 3000), cap(gx.crawlP, left), cap(gx.trustP, left), cap(gx.insightP, left), cap(gx.peersP, left), cap(gx.shopP, shopLeft)]);
+    var shop = x[5] && x[5].personas ? x[5] : null;
+    var ins = shop ? { product: shop.product, buyer: shop.buyer, one_liner: shop.one_liner, contradictions: shop.contradictions || [] } : x[3];
+    return { text: x[0] || { all: "", main: "", h1: "" }, crawl: x[1], trust: x[2] && !x[2].error ? x[2] : null, insight: ins, shop: shop, peers: x[4], side: S.sideTxt || "", sideMain: S.sideMain || "" };
   }
   function compactComp(c) {
     var p = c.page || {};
@@ -1045,7 +1073,8 @@
         var GR = S.report.growth, nNo = GR.qs.filter(function (q) { return q.g === "no"; }).length;
         if (gctx.crawl && gctx.crawl.pages) addFeed("act", "Read " + plural(gctx.crawl.pages.filter(function (x) { return x.status === 200; }).length, "page") + " from your sitemap", "Titles, schema, canonical tags and AI access, page by page", "", "search");
         if (gctx.trust && gctx.trust.facts) addFeed((gctx.trust.contradictions || []).length ? "fail" : "act", "Compared your policies with the page", (gctx.trust.contradictions || []).length ? plural(gctx.trust.contradictions.length, "conflict") + " between what the page promises and what the policy says" : "No conflicts between the page and " + plural((gctx.trust.facts.policies || []).length, "policy page"), "", "conv");
-        if (gctx.insight && gctx.insight.questions) addFeed("act", "Wrote " + plural(gctx.insight.questions.length, "question") + " for this product", clip2(gctx.insight.questions.map(function (q) { return q.q; }).join(" · "), 120), "", "barrier");
+        if (gctx.shop) addFeed("act", "4 shoppers walked the page", clip2(gctx.shop.personas.map(function (q) { return q.n + " " + q.buy; }).join(" · "), 120), "", "barrier");
+        else addFeed("info", "Shoppers didn't finish in time", "The CRO score uses the house rules alone", "", "barrier");
         addFeed(nNo ? "fail" : "pass", plural(GR.qs.length, "buyer question") + " checked for " + GR.cat, nNo ? plural(nNo, "question") + " not answered on the page" : "Every question has an answer on the page", "", "barrier");
         if (GR.peers.length) addFeed("act", "Benchmarked against " + GR.peers.map(function (x) { return x.host; }).join(" and "), "Category leaders, measured the same way", "", "market");
         if (GR.levers[0]) addFeed("act", "Top lever: " + GR.levers[0].name, GR.levers[0].what, "", "plan");
@@ -1657,17 +1686,18 @@
     return x;
   }
 
-  var LEVER_NAME = { clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", flow: "Focus & flow", speed: "Speed on phone", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
-  var PILLAR_WHAT = { clarity: "What it is, who it suits, what it does", trust: "Reviews, returns, proof, and no contradictions", price: "Total cost, delivery date, COD/UPI, offer", flow: "Layout on a phone, ad match, accessibility", speed: "Core Web Vitals and PageSpeed on a phone", discover: "Brings visitors, doesn't convert them", aov: "Grows the order after the decision", retain: "Happens after the first order" };
+  var LEVER_NAME = { shoppers: "Shoppers", proof: "Proof on the page", rules: "House rules", clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", flow: "Focus & flow", speed: "Speed on phone", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
+  var PILLAR_WHAT = { shoppers: "4 personas picked for this brand read the page and say how likely they are to buy", proof: "Tests, certificates, verified reviews, results, review volume and specs a shopper can check; known premium brands carry it by name", rules: "8 hard facts: price, policies, first screen, reviews, delivery, returns, stock, no fake pressure", clarity: "What it is, who it suits, what it does", trust: "Reviews, returns, proof, and no contradictions", price: "Total cost, delivery date, COD/UPI, offer", flow: "Layout on a phone, ad match, accessibility", speed: "Core Web Vitals and PageSpeed on a phone", discover: "Brings visitors, doesn't convert them", aov: "Grows the order after the decision", retain: "Happens after the first order" };
   function compute(R) {
     var areas = [];
     rescore(R);
+    if (R.growth && R.growth.unread) return { areas: [], total: null, verdict: "We couldn't read this page.", growth: true, unread: true, v4: true };
     if (R.growth && R.growth.score != null && R.growth.parts) {
       var G = R.growth, gt = G.score;
       G.parts.forEach(function (p) { areas.push({ key: p.id, name: LEVER_NAME[p.id] || p.id, w: p.w, v: p.v, est: p.est, grp: p.grp, src: PILLAR_WHAT[p.id] || "" }); });
       (G.side || []).forEach(function (p) { areas.push({ key: p.id, name: LEVER_NAME[p.id] || p.id, w: 0, v: p.v, side: true, src: PILLAR_WHAT[p.id] || "" }); });
       var gv = gt >= 80 ? "Strong. Small gains left." : gt >= 65 ? "Good, with clear room to grow." : gt >= 45 ? (G.lead ? "Average. Sign-ups are slipping away." : "Average. Real sales are slipping away.") : (G.lead ? "Needs work. Visitors are hitting walls." : "Needs work. Shoppers are hitting walls.");
-      return { areas: areas, total: gt, cro: G.cro, speed: G.speed, croW: G.croW, speedW: G.speedW, est: G.parts.some(function (p) { return p.est; }), verdict: gv, growth: true };
+      return { areas: areas, total: gt, cro: G.cro, speed: G.speed, croW: G.croW, speedW: G.speedW, est: G.parts.some(function (p) { return p.est; }), verdict: gv, growth: true, v4: G.scoreV === 4 };
     }
     if (R.cro && R.cro.score != null) {
       var ps3 = R.psi && R.psi.scores ? R.psi.scores : null, realSpeed = ps3 && ps3.performance != null;
@@ -1812,6 +1842,7 @@
   /* v11.3: Overall = CRO x Speed (weighted geometric mean), with the weights in a dropdown under the score */
   function rpWeights(R, C) {
     var G = R.growth, A = C.areas;
+    if (C.v4) return rpWeights4(R, C);
     function tile(nm, v, w, est, cls) {
       return '<div class="rp-sub ' + cls + '"><span class="nm"><i class="pl-dot ' + cls + '"></i>' + esc(nm) + (est ? "<em>est.</em>" : "") + '</span><div class="v"><b data-plan-' + cls + ">" + (v == null ? "n/a" : v) + "</b><span>/100</span></div>" +
         '<span class="bar"><i class="gain" data-plan-' + cls + '-bar style="width:' + (v || 0) + '%"></i><i class="now" style="width:' + (v || 0) + '%"></i></span><span class="w">' + (w != null ? w + "% of the overall score" : "not measured") + "</span></div>";
@@ -1837,6 +1868,24 @@
     return h;
   }
 
+  /* v12 hero: CRO and Speed tiles, and how the score is made (shoppers + house rules, speed) */
+  function rpWeights4(R, C) {
+    var G = R.growth;
+    function tile(nm, v, w, est, cls) {
+      return '<div class="rp-sub ' + cls + '"><span class="nm"><i class="pl-dot ' + cls + '"></i>' + esc(nm) + (est ? "<em>est.</em>" : "") + '</span><div class="v"><b data-plan-' + cls + ">" + (v == null ? "n/a" : v) + "</b><span>/100</span></div>" +
+        '<span class="bar"><i class="gain" data-plan-' + cls + '-bar style="width:' + (v || 0) + '%"></i><i class="now" style="width:' + (v || 0) + '%"></i></span><span class="w">' + (w != null ? w + "% of the overall score" : "not measured") + "</span></div>";
+    }
+    var sp = C.areas.filter(function (a) { return a.grp === "speed"; }), SB = (G.branches && G.branches.speed) || {};
+    function row(a) { return '<tr><td><span class="pn">' + esc(a.name) + (a.est ? "<em>est.</em>" : "") + '</span><span class="pw">' + esc(a.src) + '</span></td><td class="pv" style="color:' + colorFor(a.v) + '">' + (a.v == null ? "n/a" : a.v) + '</td><td class="pc">' + (a.w != null ? a.w + "%" : "") + "</td></tr>"; }
+    var h = (G.plan ? '<p class="rp-plan-line" data-plan-line hidden></p>' : "") + '<div class="rp-subs">' + tile("CRO score", C.cro, C.croW, false, "cro") + tile("Speed score", C.speed, C.speedW, sp.some(function (a) { return a.est; }), "speed") + "</div>";
+    h += '<details class="rp-how rp-wt"><summary>How this score works</summary><table class="rp-wtab"><thead><tr><th>Part</th><th>Score</th><th>Weight</th></tr></thead><tbody>';
+    h += '<tr class="grp"><td>CRO score</td><td class="pv">' + (C.cro == null ? "n/a" : C.cro) + '</td><td class="pc">' + C.croW + "%</td></tr>" + C.areas.filter(function (a) { return a.grp === "cro"; }).map(row).join("") +
+      (G.mix != null ? row({ name: "On the benchmark scale", src: "Weighted mix " + G.mix + ", placed on the scale our graded pages set: weak pages 30-55, good brands 70-80, the best 85-90", v: C.cro, w: null }) : "");
+    h += '<tr class="grp"><td>Speed score</td><td class="pv">' + (C.speed == null ? "n/a" : C.speed) + '</td><td class="pc">' + C.speedW + "%</td></tr>" + row({ name: SB.est || SB.perf == null ? "Estimated from the page's code" : "Core Web Vitals and Google PageSpeed (mobile)", src: SB.capped ? "Capped at 50: Google's real-user data rates this page slow" : "Main image time, blocked time and layout shift, plus Lighthouse on a mid-range phone", v: C.speed, w: null, est: SB.est });
+    h += "</tbody></table><p>" + esc("Shoppers: Groq picks the 4 kinds of shopper most likely to land on this page, then each one reads the page the way a real buyer would and says how likely they are to buy. Their scores are weighted by how many shoppers like them you get. A brand they already know needs less proof; an unknown brand has to earn it on the page. Proof: what a careful shopper can check on the page (tests and certificates, verified reviews, results, review volume, specs); household names and well-known premium brands carry it by name. House rules: 8 hard facts we check with scripts. CRO is " + Math.round(100 * ((G.w4 && G.w4.shop) || 0)) + "% shoppers, " + Math.round(100 * ((G.w4 && G.w4.proof) || 0)) + "% proof and " + Math.round(100 * ((G.w4 && G.w4.rules) || 0)) + "% house rules, and the mix is placed on a benchmark scale anchored on product pages the Troopod team graded (weak pages land around 30-55, good brands' pages 70-80, the best 85-90). Speed counts for 15% of the overall score:") +
+      ' <span class="rp-formula">Overall = CRO<sup>0.85</sup> × Speed<sup>0.15</sup></span></p></details>';
+    return h;
+  }
   function renderReport(R, opts) {
     opts = opts || {};
     var L = R.lib || { signals: {}, barriers: {}, rootCauses: {} };
@@ -1859,15 +1908,16 @@
     h += '<div class="rp-meta"><span class="an-tag">' + esc(PAGE_TYPE[P.pageType] || "Page") + "</span>" + (P.category && P.category !== "Other" ? '<span class="an-tag">' + esc(P.category) + "</span>" : "") + (P.aovBand ? '<span class="an-tag">' + esc(bandLabel(P.aovBand)) + "</span>" : "") + (P.platform ? '<span class="an-tag">' + esc(P.platform) + "</span>" : "") + '<span class="an-tag">' + esc(created.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })) + "</span></div></div>";
     h += '<div class="rp-actions">' + (opts.mode === "live" ? '<button class="btn btn-ghost btn-sm" type="button" data-share' + (S.saveState === "saved" ? "" : " disabled") + "><span>" + (S.saveState === "saved" ? "Copy share link" : S.saveState === "failed" ? "Link unavailable" : "Saving link…") + "</span></button>" : opts.mode === "shared" ? '<button class="btn btn-ghost btn-sm" type="button" data-share><span>Copy share link</span></button>' : "") + (S.offline ? "" : '<button class="btn btn-ghost btn-sm" type="button" data-print>Save as PDF</button>') + '<button class="btn btn-light btn-sm" type="button" data-new>' + (opts.mode === "live" ? "Analyze another site" : "Run your own analysis") + "</button></div></header>";
 
+    var GR = R.growth && win.TrooGrowth ? win.TrooGrowth.render(R.growth, R) : null;
     /* verdict hero */
     var path = ""; try { path = new URL(R.url).pathname; } catch (e) { /* ignore */ }
     var shot = R.psi && R.psi.shots && R.psi.shots.final;
     var og = /^https:\/\//i.test(P.ogImage || "") ? P.ogImage : "";
     h += '<section class="rp-hero" id="rp-overview">';
     h += '<div class="rp-score"><div class="rp-score-top">' + ringSvg(C.total) + '<div><span class="an-label">' + (C.growth ? "Overall score" : "Website score") + '</span><div class="rp-verdict">' + esc(C.verdict) + '</div><p class="an-sub">' + (C.growth ? "This page only, for a shopper who is already on it." : "Across the areas we could measure on this page.") + (C.est ? " Speed is estimated." : "") + "</p></div></div>";
-    if (C.growth) h += rpWeights(R, C);
+    if (C.growth && !C.unread) h += rpWeights(R, C);
     var kpis = '<div class="rp-kpis"><div><b>' + F.length + "</b><span>" + (F.length === 1 ? "issue" : "issues") + ' costing sales</span></div><div><b>' + nBar + "</b><span>buyer " + (nBar === 1 ? "barrier" : "barriers") + ' triggered</span></div><div><b>' + T.length + "</b><span>" + (T.length === 1 ? "test" : "tests") + " ready to run</span></div></div>";
-    h += kpis;
+    if (!C.v4) h += kpis;
     if (!C.growth) h += '<div class="rp-areas">' + C.areas.map(function (a) {
       return '<div class="rp-area' + (a.ctx ? " ctx" : "") + (a.v == null ? " na" : "") + '" title="' + esc(a.src) + '"><span class="nm">' + esc(a.name) + (a.est && a.v != null ? "<em>est.</em>" : "") + '</span><span class="bar"><i style="width:' + (a.v || 0) + "%;background:" + colorFor(a.v) + '"></i></span><b>' + (a.v == null ? "n/a" : a.v) + '</b><span class="w">' + (a.w ? a.w + "%" : "info") + "</span></div>";
     }).join("") + "</div>";
@@ -1892,8 +1942,12 @@
     h += '<dl class="rp-facts">' + facts.map(function (f) { return "<div><dt>" + esc(f[0]) + "</dt><dd>" + esc(f[1]) + "</dd></div>"; }).join("") + "</dl></div>";
     h += "</section>";
 
+    /* v12: the short report (shoppers, top 3 fixes, house rules), with everything else behind one button */
+    if (C.v4 && GR) {
+      h += '<div class="rp-short">' + GR.short + "</div>";
+      if (!C.unread) h += '<div class="rp-more"><button type="button" class="btn btn-ghost" data-full-toggle aria-expanded="false">See the full report</button><span>Fix planner on your page, every buyer question, growth levers, speed and search details' + (hasComp ? ", competitors" : "") + "</span></div>";
+    }
     /* body: rail + main */
-    var GR = R.growth && win.TrooGrowth ? win.TrooGrowth.render(R.growth, R) : null;
     var nav;
     if (GR) {
       nav = GR.nav.slice();
@@ -1906,7 +1960,7 @@
       if (hasComp) nav.push(["rp-compare", "Competitors", R.comps.length]);
       nav.push(["rp-worth", "What a lift is worth", ""], ["rp-next", "Next step", ""]);
     }
-    h += '<div class="rp-body"><nav class="rp-rail" aria-label="In this report"><span class="an-label">In this report</span>' + nav.map(function (n, i) { return '<a href="#' + n[0] + '" data-rail="' + n[0] + '"' + (i === 0 ? ' class="on"' : "") + "><span>" + esc(n[1]) + "</span>" + (n[2] !== "" ? "<i>" + n[2] + "</i>" : "") + "</a>"; }).join("") + '<a class="btn btn-primary btn-sm rp-rail-cta" href="#rp-next">Fix it with TrooCRO</a></nav><div class="rp-main">';
+    h += '<div class="rp-body"' + (C.v4 ? " data-full hidden" : "") + '><nav class="rp-rail" aria-label="In this report"><span class="an-label">In this report</span>' + nav.map(function (n, i) { return '<a href="#' + n[0] + '" data-rail="' + n[0] + '"' + (i === 0 ? ' class="on"' : "") + "><span>" + esc(n[1]) + "</span>" + (n[2] !== "" ? "<i>" + n[2] + "</i>" : "") + "</a>"; }).join("") + '<a class="btn btn-primary btn-sm rp-rail-cta" href="#rp-next">Fix it with TrooCRO</a></nav><div class="rp-main">';
     if (GR) {
       h += GR.html;
       if (T.length) h += rpTests(R, T, L, host, created);
@@ -2473,6 +2527,12 @@
     });
     if (win.TrooGrowth && R.growth) win.TrooGrowth.wire(root, R.growth, { view: function () { return S.viewP && S.url === R.url ? S.viewP : fetchView(R.url); } });
     var pr = $("[data-print]", root); if (pr) pr.addEventListener("click", function () { $$("details", root).forEach(function (d) { d.open = true; }); win.print(); });
+    var ft = $("[data-full-toggle]", root), fb = $("[data-full]", root);
+    if (ft && fb) ft.addEventListener("click", function () {
+      var open = fb.hidden; fb.hidden = !open; ft.setAttribute("aria-expanded", open ? "true" : "false");
+      ft.textContent = open ? "Hide the full report" : "See the full report";
+      if (open && fb.scrollIntoView) fb.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     var nb = $("[data-new]", root); if (nb) nb.addEventListener("click", function () { setQuery(""); urlIn.value = ""; show("start"); urlIn.focus(); });
     /* tabs */
     var tabs = $$("[data-rp-tab]", root);

@@ -1137,7 +1137,10 @@
     /* last resort, kept small on Groq: only when the real-browser render failed (bot check, timeout) does the grader read
        Google PageSpeed's full-page screenshot, which comes from Google's own Chrome */
     var fullP = CFG.gradeShots !== false ? Promise.all([gx.renderP]).then(function (rr) { return rr[0] ? [] : Promise.race([Promise.resolve(S.psiP).then(function (ps) { return ps && ps.shots && ps.shots.full ? sliceShot(ps.shots.full) : []; }).catch(function () { return []; }), sleep(110000).then(function () { return []; })]); }) : Promise.resolve([]);
-    gx.gradeP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP, aiCatP, fullP]).then(function (x) {
+    /* what the nightly review has learned (routes, weights, trial questions); never blocks the scan for more than 4s */
+    var learnP = Promise.race([fetch((CFG.grade || String(CFG.growth || "").replace(/\/+$/, "") + "-grade") + "/learn").then(function (res) { return res.ok ? res.json() : null; }).catch(function () { return null; }), sleep(4000).then(function () { return null; })]);
+    gx.gradeP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP, aiCatP, fullP, learnP]).then(function (x) {
+      try { if (win.TrooGrowth.setLearn) win.TrooGrowth.setLearn(x[5], new URL(r.url).hostname); } catch (e) { /* ignore */ }
       var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[3] || x[2] || "Other", shots = x[4] || [];
       if (!t || !t.main || t.main.length < 300 || !win.TrooGrowth.qList) return null;
       var L = win.TrooGrowth.qList(cat, [p.title, t.h1, prod.title, prod.type].join(" "), t.main.slice(0, 4000));
@@ -1159,7 +1162,7 @@
       var slim = function (q) { var o = { id: q.id, q: q.q, good: q.good }; if (q.c) o.c = q.c; return o; };
       return gapi("/grade", { url: r.url, v: "13b", cat: cat, list: L.key, product: prod.title || t.h1 || "", price: prod.price ? "Rs " + prod.price : "", facts: facts.join("; "), text: text.slice(0, 12000), policy: tr.policyText || "",
         qs: L.qs.map(slim), adds: L.adds.map(function (a) { return { n: a.n, qs: a.qs.map(slim) }; }), rules: L.rules, shots: shots, t: CFG.shopTest || undefined }, 90000, CFG.grade || String(CFG.growth || "").replace(/\/+$/, "") + "-grade")
-        .then(function (d) { if (d && d.grades) { d.list = L.key; d.cat = cat; } return d && d.grades ? d : null; });
+        .then(function (d) { if (d && d.grades) { d.list = L.key; d.cat = cat; d.learned = !!L.learned; d.learnRev = x[5] && x[5].rev || ""; } return d && d.grades ? d : null; });
     });
   }
   function sliceShot(full) {
@@ -2306,7 +2309,7 @@
      right: the page on a phone with numbered pins that match the fixes. Every number comes from the same plan model. */
   function wbRing(v) {
     return '<div class="wb-ring" data-wb-ring style="--now:' + (v || 0) + ";--to:" + (v || 0) + '"><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="bg" cx="60" cy="60" r="52" pathLength="100"/><circle class="to" cx="60" cy="60" r="52" pathLength="100"/><circle class="now" cx="60" cy="60" r="52" pathLength="100"/></svg>' +
-      '<div class="wb-ring-v"><b data-wb-to>' + (v == null ? "–" : v) + '</b><span class="wb-ring-from">now ' + (v == null ? "–" : v) + "</span></div></div>";
+      '<div class="wb-ring-v"><b>' + (v == null ? "–" : v) + '</b><span class="wb-ring-from">out of 100</span><span class="wb-ring-fix" data-wb-fixline hidden>with fixes <b data-wb-to>' + (v == null ? "–" : v) + "</b></span></div></div>";
   }
   function rpWorkbench(R, C, GR, opts, host, T, hasComp, created) {
     var G = R.growth, W = GR.wb, Pl = G.plan || { cro: [], speed: [], base: {} }, P = R.page || {};
@@ -3105,7 +3108,7 @@
     out.F.forEach(function (f) { lines.push("- " + f.prio.l + ": " + (tidy((f.sig || {}).name) || f.key) + ". " + f.evidence + ((f.sig || {}).barriers && f.sig.barriers.length ? " Barriers: " + f.sig.barriers.join(", ") + "." : "")); });
     if (out.T.length) { lines.push("", "## First tests"); out.T.forEach(function (t) { lines.push(t.n + ". " + t.title + ". Where: " + t.where + ". " + t.measure); }); }
     if (win.TrooGrowth && R.growth) lines.push(win.TrooGrowth.markdown(R.growth));
-    lines.push("", "## Next step", "Fix it with TrooCRO: contact.html · WhatsApp +91 98104 83552");
+    lines.push("", "## Next step", "Fix it with TrooCRO: contact.html");
     return lines.join("\n");
   }
 

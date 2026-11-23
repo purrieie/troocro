@@ -35,4 +35,4 @@ Forms on this page, and what they send:
 Shared reports open at analyze.html?r=REPORT_ID.
 
 ## Contact
-Book a demo: contact.html · WhatsApp +91 98104 83552
+Book a demo: contact.html

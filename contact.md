@@ -37,4 +37,4 @@ Forms on this page, and what they send:
 - HomeLane: +13.5% visitor-to-lead in a 50/50 A/B test
 
 ## Contact
-WhatsApp: +91 98104 83552 · Free site analysis: analyze.html
+Free site analysis: analyze.html

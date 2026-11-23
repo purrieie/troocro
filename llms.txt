@@ -23,6 +23,5 @@ Every page on this site has a Markdown version with the same facts, for agents a
 - HomeLane: +13.5% visitor-to-lead in a 50/50 A/B test
 
 ## Contact
-- WhatsApp: +91 98104 83552
 - Troopod: https://troopod.io/
 - Case studies: https://troopod.io/case-studies

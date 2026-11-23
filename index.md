@@ -7,8 +7,6 @@ format: agent view of this page (the same facts as the page, as text)
 
 # Every lost sale has a reason. TrooCRO finds it.
 
-TrooCRO checks your store against 937 conversion signals and 79 buyer barriers. Then our dev agents build the fixes and test them, so more of your traffic turns into revenue.
-
 - Analyze your site (free, about 2 minutes): analyze.html
 - Book a demo: contact.html
 
@@ -50,4 +48,4 @@ Averages across Troopod's delivered projects: CRO audit 6.4 days; UI/UX fix live
 
 ## Contact
 
-WhatsApp: +91 98104 83552 · Book a demo: contact.html · Troopod: https://troopod.io/
+Book a demo: contact.html · Troopod: https://troopod.io/

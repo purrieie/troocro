@@ -1148,6 +1148,9 @@ details[open] > summary .chev::before { transform: rotate(-135deg); top: 7px; }
 .wb-ring-v { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .wb-ring-v b { font-size: 34px; font-weight: 500; line-height: 1; }
 .wb-ring-from { margin-top: 4px; font: 11px var(--f-mono); color: var(--muted); }
+.wb-ring-fix { margin-top: 3px; font: 11px var(--f-mono); color: var(--green); }
+.wb-ring-fix b { font-size: 11px; font-weight: 600; }
+.wb-ring-fix[hidden] { display: none; }
 .wb-score-t h2 { margin: 6px 0 4px; font-size: 22px; line-height: 1.25; font-weight: 600; }
 .wb-score-t p { margin: 0; font-size: 13.5px; color: var(--muted); }
 .wb-score-t .up { color: var(--green); font-weight: 500; }
@@ -1259,3 +1262,4 @@ details[open] > summary .chev::before { transform: rotate(-135deg); top: 7px; }
 .wb-fails ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .wb-fails li { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--wb-s2); border: 1px solid var(--line); font-size: 13.5px; }
 .wb-fails li span { color: var(--muted); font-size: 12.5px; }
+.wb-score .wb-k .up { white-space: nowrap; }

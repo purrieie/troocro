@@ -262,20 +262,45 @@
   /* ---------------- v13 buyer questions: one list per kind of product, graded by the AI grader (troogrowth-grade) ---------------- */
   var Q13 = LIB.q13 || null;
   /* which list a page uses: the category's variant whose keywords match the product, else the category default */
+  /* self-learning: routes, weight changes and trial questions that the nightly review writes to Supabase (tg_learn),
+     served by troogrowth-grade/learn. No repo push needed for them to take effect. */
+  var LEARN = { routes: [], weights: [], qs: [] }, LHOST = "";
+  function setLearn(d, host) { if (d && d.routes) LEARN = d; LHOST = String(host || "").replace(/^www\./, "").toLowerCase(); }
+  function lq(key) {
+    var base = Q13.lists[key] || [], W = {};
+    (LEARN.weights || []).forEach(function (x) { if (x.list === key) W[x.id] = x.w; });
+    var out = base.map(function (q) { if (W[q.id] == null) return q; var c = {}; for (var k in q) c[k] = q[k]; c.w = W[q.id]; c.p = c.w >= 8 ? "must" : "should"; return c; });
+    (LEARN.qs || []).forEach(function (x) { if (x.list === key && !out.some(function (q) { return q.id === x.id; })) out.push({ id: x.id, q: x.q, good: x.good, w: x.w, p: x.p, t: x.t, grp: x.grp, learned: true }); });
+    return out;
+  }
+  function learnedRoute(s) {
+    var hit = null;
+    (LEARN.routes || []).some(function (r) {
+      var m = String(r.m || "");
+      if (!Q13.lists[r.list]) return false;
+      if (/^host:/.test(m)) { if (LHOST && LHOST === m.slice(5).replace(/^www\./, "").toLowerCase()) hit = r.list; }
+      else { try { if (m && new RegExp(m, "i").test(s)) hit = r.list; } catch (e) { /* bad regex */ } }
+      return !!hit;
+    });
+    return hit;
+  }
   function qList(cat, s, more) {
     if (!Q13) return null;
     var V = Q13.variant[cat] || Q13.variant.Other, key = V.d, found = false;
-    [s, more || ""].forEach(function (x) { for (var i = 0; !found && x && i < V.v.length; i++) { if (new RegExp(V.v[i][1], "i").test(x)) { key = V.v[i][0]; found = true; } } });
+    var lr = learnedRoute(s || "");
+    if (lr) { key = lr; found = true; }
+    /* a pattern starting "T:" is tested on the product title only (store menus name every product the store sells) */
+    [s, more || ""].forEach(function (x, xi) { for (var i = 0; !found && x && i < V.v.length; i++) { var rx = V.v[i][1], t1 = rx.slice(0, 2) === "T:"; if (t1 && xi) continue; if (new RegExp(t1 ? rx.slice(2) : rx, "i").test(x)) { key = V.v[i][0]; found = true; } } });
     var adds = (Q13.adds[key] || []).map(function (a) { return { n: a.n, rx: a.rx, qs: a.qs }; });
     var hit = adds.filter(function (a) { return new RegExp(a.rx, "i").test(s); });
-    return { key: key, qs: Q13.lists[key], adds: hit.length ? hit : adds, rules: Q13.uRules.concat(Q13.rules[key] || []) };
+    return { key: key, qs: lq(key), adds: hit.length ? hit : adds, rules: Q13.uRules.concat(Q13.rules[key] || []), learned: !!lr };
   }
   var G13 = { A: "yes", P: "partly", N: "no", U: "unread" };
   function gradeQ13(R, ctx, cat) {
     var P = R.page || {}, prod = (ctx.trust || {}).product || {};
     var L = qList(cat, [P.title, ctx.text.h1, prod.title, prod.type].join(" "), String(ctx.text.main || "").slice(0, 4000)); if (!L) return null;
     var gr = ctx.grade && ctx.grade.grades && Q13.lists[ctx.grade.list] ? ctx.grade : null;
-    if (gr && gr.list !== L.key) L = { key: gr.list, qs: Q13.lists[gr.list] };
+    if (gr && gr.list !== L.key) L = { key: gr.list, qs: lq(gr.list) };
     var T = (ctx.text.main || ctx.text.all || "") + " " + (ctx.side || "");
     var pick = gr && gr.sub ? (Q13.adds[L.key] || []).filter(function (a) { return a.n === gr.sub; })[0] : null;
     var rows = L.qs.concat(pick ? pick.qs : []), out = [];
@@ -761,7 +786,12 @@
     /* results with numbers */
     /* a large, natural review base is proof of scale: 500+ reviews at 4.2★ or more that don't look filtered or unreliable */
     if (RV && RV.cnt >= 500 && RV.rating >= 4.2 && !RV.perfect && !RV.fishy) add("scale", true, 20, RV.cnt.toLocaleString("en-IN") + " reviews at " + (+RV.rating).toFixed(1) + "★");
-    add("results", /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers)|tested on \d+|\d+ (?:volunteers|participants|subjects)|\bday 0\b|before\s*(?:&|and|\/)\s*after|(?:trusted by|loved by|over|\d+)\s*[\d.,]+\s*(?:lakh|l\+|k\+|mn|million|crore)?\s*(?:happy )?customers/i.test(t), 20, "Results or customer numbers");
+    /* v14.9: only product results count fully (percent of users, before/after, tested on N people). A store-wide
+       "10 lakh+ happy customers" line is cheap to write and says nothing about this product: small credit, own row. */
+    var resOk = /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers)|tested on \d+|\d+ (?:volunteers|participants|subjects)|\bday 0\b|(?:week|day|month)s? \d+\b[^.]{0,40}(?:result|visible|reduc|improv)/i.test(t);
+    var baOnly = !resOk && /before\s*(?:&|and|\/)\s*after/i.test(t);
+    add("results", resOk || baOnly, resOk ? 20 : 8, resOk ? "Product results with numbers" : baOnly ? "Before and after, without numbers" : "Product results with numbers");
+    if (!resOk && !baOnly && /(?:trusted by|loved by|over|more than)?\s*\d[\d.,]*\s*(?:lakh|l\+|k\+|mn|million|crore)\+?\s*(?:happy |satisfied )?(?:customers|users|buyers)/i.test(t)) add("crowd", true, 6, "A store-wide customer count");
     var raw = pts * 100 / 60;
     var price = (sh && sh.stock && sh.stock.price) || (tr.product && tr.product.price) || P.aov || 0;
     var minBuy = 0; (t.match(/(?:min(?:imum)?\.? (?:purchase|order)|orders? (?:above|over|worth)|purchase of)\s*(?:of\s*)?(?:rs\.?|₹|inr)?\s?([\d,]{3,6})/gi) || []).forEach(function (m) { var v = +(m.match(/([\d,]{3,6})\s*$/) || [0, "0"])[1].replace(/,/g, ""); if (v > minBuy) minBuy = v; });
@@ -984,7 +1014,9 @@
     var qAI = q13 && q13.ai, qG = qAI ? q13.filter(function (q) { return GS[q.g] != null; }) : [];
     var qScore = qG.length ? qsc(qG) : null;
     /* when we could read only a little of the page (specs in tabs that didn't load), unanswered can mean unread: lean on the shoppers too */
-    var thin = String(ctx.text.main || "").length < 3500;
+    /* v14.9: a short page we read fully (real browser or script run worked) is a thin page, and it's graded as it is.
+       Only when the read itself may have missed text, or the brand is one shoppers already know, do the shoppers' reactions soften the question score. */
+    var thin = String(ctx.text.main || "").length < 3500 && (!!ctx.partialRead || (PF && PF.carry > 0)); /* household and known premium brands: shoppers arrive already knowing the basics */
     if (qScore != null && thin && sScore != null) qScore = Math.round((qScore + sScore) / 2);
     if (qScore != null) sScore = qScore;
     var vScore = sScore == null ? RV.score : RV.score == null ? sScore : Math.round((1 - REV_W) * sScore + REV_W * RV.score);
@@ -1265,7 +1297,7 @@
       qa("[data-plan-pin]").forEach(function (p) { p.classList.toggle("picked", on.indexOf(p.getAttribute("data-plan-pin")) >= 0); });
       setHTML("[data-plan-cro]", arrow(b.cro, pr.cro)); setHTML("[data-plan-speed]", arrow(b.speed, pr.speed));
       if (WB) {
-        setHTML("[data-wb-to]", String(pr.overall)); setHTML("[data-wb-up]", d > 0 ? "+" + d + " pts" : "no change");
+        setHTML("[data-wb-to]", String(pr.overall)); qa("[data-wb-fixline]").forEach(function (el) { el.hidden = !(d > 0); }); setHTML("[data-wb-up]", d > 0 ? "+" + d + " pts" : "no change");
         qa("[data-wb-ring]").forEach(function (el) { el.style.setProperty("--to", (pr.overall || 0) + ""); });
         setHTML("[data-wb-n]", on.length + (on.length === 1 ? " fix" : " fixes"));
         qa("[data-wb-cro-to]").forEach(function (el) { el.style.width = (pr.cro || 0) + "%"; }); qa("[data-wb-sp-to]").forEach(function (el) { el.style.width = (pr.speed || 0) + "%"; });
@@ -1375,5 +1407,5 @@
     return md;
   }
 
-  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, qList: qList, mergeRender: mergeRender, hiddenOf: hiddenOf, NAMES: BR_NAME, project: project };
+  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, qList: qList, setLearn: setLearn, mergeRender: mergeRender, hiddenOf: hiddenOf, NAMES: BR_NAME, project: project };
 })();

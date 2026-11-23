@@ -270,7 +270,7 @@
     var hit = adds.filter(function (a) { return new RegExp(a.rx, "i").test(s); });
     return { key: key, qs: Q13.lists[key], adds: hit.length ? hit : adds, rules: Q13.uRules.concat(Q13.rules[key] || []) };
   }
-  var G13 = { A: "yes", P: "partly", N: "no" };
+  var G13 = { A: "yes", P: "partly", N: "no", U: "unread" };
   function gradeQ13(R, ctx, cat) {
     var P = R.page || {}, prod = (ctx.trust || {}).product || {};
     var L = qList(cat, [P.title, ctx.text.h1, prod.title, prod.type].join(" "), String(ctx.text.main || "").slice(0, 4000)); if (!L) return null;
@@ -284,14 +284,22 @@
       var x = gr && gr.grades[b.id];
       if (x) {
         if (x.g === "NA") return;
-        q.g = G13[x.g];
+        q.g = G13[x.g] || "unread";
+        /* on a page we could barely read, "not answered" can't be trusted: it becomes "couldn't read" and is left out */
+        /* if neither the real browser nor the script run worked, lines stores load with JavaScript (delivery, returns,
+           reviews, warranty) may simply not have reached us: "not answered" there becomes "couldn't read" */
+        if (q.g === "no" && (ctx.poorRead || (ctx.partialRead && /^(delivery|returns|reviews|warranty)$/.test(b.t)))) q.g = "unread";
+        /* the page names it (a Size Guide link, a Price Breakup tab, a returns or delivery section): shoppers can open it,
+           so it counts as answered even though our reader couldn't open it */
+        if (x.g === "U" && x.quote) { q.g = "yes"; q.fix = ""; q.ev.push("Your page has \u201c" + clip(x.quote, 80) + "\u201d, so shoppers can open it. We couldn't open it ourselves, so we didn't check what's inside."); out.push(q); return; }
+        if (q.g === "unread") { q.tag = "confirm"; q.fix = ""; q.ev.push(x.quote ? "We saw “" + clip(x.quote, 80) + "” on your page, but what it opens didn't load for our reader. Not counted against you: check it on a phone." : ctx.poorRead ? "We couldn't read enough of this page to check this. Not counted against you." : "Stores usually load this with JavaScript, and your page's scripts didn't run for our reader, so we couldn't check it. Not counted against you."); out.push(q); return; }
         if (x.quote) q.ev.push("The page says: “" + clip(x.quote, 150) + "”");
         q.fix = x.miss ? cap(x.miss.replace(/\.?$/, ".")) : "Show: " + b.good.charAt(0).toLowerCase() + b.good.slice(1) + ".";
         if (q.g === "no" && !q.ev.length) q.ev.push("Not answered on the page.");
       } else {
         if (b.c || gr) return; // conditional ones need the grader; a question the grader skipped is left out
         var hit = findQ(T, Q13.topic[b.t]);
-        q.g = hit ? "partly" : "no"; q.tag = "estimate";
+        q.g = hit ? "partly" : ctx.poorRead ? "unread" : "no"; q.tag = "estimate";
         q.ev.push(hit ? evq("related text", hit) + " Checked by keywords only." : "No related text found. Checked by keywords only.");
       }
       out.push(q);
@@ -691,6 +699,8 @@
     else if (px >= 70) set("pressure", "partly", px + "% off the MRP every day reads as an inflated MRP." + (timer.length ? " Plus a countdown." : ""));
     else if (timer.filter(function (x) { return x.k === "timer_text"; }).length) { var tt = timer.filter(function (x) { return x.k === "timer_text"; })[0]; set("pressure", "partly", tt.t + ": " + (tt.ev || "") + " Make sure it's real."); }
     else set("pressure", "pass", "No countdowns or made-up stock numbers.");
+    /* on a page we could barely read, a missing delivery line, returns line or rating is our failure, not the page's */
+    if (ctx.poorRead || ctx.partialRead) ["delivery", "returns", "reviews"].forEach(function (k) { var r = out[k]; if (r && r.st === "fail") { r.st = "na"; r.v = null; r.ev = "Couldn't read: we could only read part of this page, so we can't say this is missing. Not counted."; } });
     return RULE_ORDER.map(function (k) { return out[k]; });
   }
   /* Reviews (v12.5): part of the customer voice, not of proof. Count, verified buyers and rating build it; reviews that look
@@ -762,6 +772,8 @@
     var known = sh && sh.brand_known, tier = sh && sh.price_tier;
     var carry = known === "household" ? 80 : known === "well-known" && (tier === "premium" || tier === "luxury") ? 75 : 0;
     var lv = ctx.text.live || null;
+    /* proof we couldn't find on a page we could barely read is left out, not scored low */
+    if (ctx.poorRead && raw < 40 && !carry) return { score: null, raw: raw, carry: 0, unread: true, known: known || "", tier: tier || "", items: it.map(function (x) { return x.ok ? x : Object.assign({}, x, { unk: true }); }), live: "" };
     return { score: Math.max(raw, carry), raw: raw, carry: carry, known: known || "", tier: tier || "", items: it, live: lv ? (lv.ok ? lv.mode : "failed") : "" };
   }
   /* Looks (v12.6): how the page looks at a glance. The first phone screen as shoppers see it (measured in the live copy:
@@ -834,6 +846,9 @@
     ctx.adMatch = adMatchOf(I.ad, R, ctx.text); ctx.traffic = I.traffic || "";
     var lead = !!P.lead;
     ctx.sub = sub;
+    /* a poor read: little text, and neither the real-browser render nor the script run added anything */
+    ctx.poorRead = String(ctx.text.main || "").length < 2500 && !(ctx.text.render && ctx.text.render.ok) && !(ctx.text.live && ctx.text.live.ok && ctx.text.live.mode !== "same");
+    ctx.partialRead = !(ctx.text.render && ctx.text.render.ok) && !(ctx.text.live && ctx.text.live.ok);
     var q13 = !lead && Q13 ? gradeQ13(R, ctx, cat) : null;
     var qs = q13 || gradeLib(R, ctx, cat);
     ctx.qList = q13 ? q13.list : "";
@@ -978,7 +993,7 @@
     var Mo4 = { v4: true, proof: PF.score, proofTo: proofTo, wP: W4.proof, rev: RV.score, revW: REV_W, rules: rules.map(function (r) { return { id: r.id, v: r.v }; }), q13: qG.map(function (q) { return { id: q.id, w: q.w, v: GS[q.g] }; }), thin: thin, shop: sh ? sh.personas.map(function (p) { return { id: p.id, fit: p.fit, buy: p.buy, to: p.fix && p.fix.to != null ? p.fix.to : p.buy }; }) : [], wS: W4.shop, wR: W4.rules, sp: Mo.sp, fixes: [] };
     var fx4 = [];
     rules.forEach(function (r) { if (r.st === "fail" || r.st === "partly") fx4.push({ id: "r_" + r.id, kind: "cro", pillar: "rules", t: r.bad, ev: r.ev, fix: r.fix, sev: r.st === "fail" ? "Must solve" : "Should solve", partly: r.st === "partly", region: r.region, e: { t: "rule" } }); });
-    if (PF.score < 60 && missP.length) fx4.push({ id: "p_proof", kind: "cro", pillar: "proof", t: "Show proof shoppers can check", ev: "Missing: " + missP.slice(0, 4).join(", ") + ".", fix: PROOF_FIX[ctx.qList] || "Add what this product can prove: test or certificate results with numbers, before and after, specs and materials as text, ratings from Nykaa or Amazon.", sev: PF.score < 35 ? "Must solve" : "Should solve", region: "reviews", e: { t: "proof" } });
+    if (PF.score != null && PF.score < 60 && missP.length) fx4.push({ id: "p_proof", kind: "cro", pillar: "proof", t: "Show proof shoppers can check", ev: "Missing: " + missP.slice(0, 4).join(", ") + ".", fix: PROOF_FIX[ctx.qList] || "Add what this product can prove: test or certificate results with numbers, before and after, specs and materials as text, ratings from Nykaa or Amazon.", sev: PF.score < 35 ? "Must solve" : "Should solve", region: "reviews", e: { t: "proof" } });
     /* v13: fixes come only from buyer questions the page leaves open, biggest first */
     qG.filter(function (q) { return q.g !== "yes"; }).sort(function (a, b) { return b.w * (1 - GS[b.g]) - a.w * (1 - GS[a.g]); }).slice(0, 8).forEach(function (q) {
       fx4.push({ id: "q_" + q.id, kind: "cro", pillar: "shoppers", t: q.q, ev: q.ev[0] || "", fix: q.fix || "", sev: q.p === "must" ? "Must solve" : "Should solve", partly: q.g === "partly", region: "content", e: { t: "q13" } });
@@ -1042,7 +1057,7 @@
     var PF = G.proof;
     if (PF) {
       var pw = Math.round(100 * ((G.w4 && G.w4.proof) || 0.4));
-      h += '<section class="rp-sec pf" id="rp-proof">' + head("Proof", "Proof on the page: " + PF.score + "/100", (PF.carry && PF.carry >= PF.raw ? "Shoppers already know " + esc((G.shop && G.shop.brand) || "this brand") + (PF.tier === "premium" || PF.tier === "luxury" ? " as a " + esc(PF.tier) + " brand" : "") + ", so the name does most of the proving. On the page itself: " + PF.raw + "/100. " : "Besides reviews, what a careful shopper can check before paying: tests and certificates, specs, results. ") + pw + "% of the CRO score.") +
+      h += '<section class="rp-sec pf" id="rp-proof">' + head("Proof", PF.score == null ? "Proof on the page: couldn't read" : "Proof on the page: " + PF.score + "/100", (PF.carry && PF.carry >= PF.raw ? "Shoppers already know " + esc((G.shop && G.shop.brand) || "this brand") + (PF.tier === "premium" || PF.tier === "luxury" ? " as a " + esc(PF.tier) + " brand" : "") + ", so the name does most of the proving. On the page itself: " + PF.raw + "/100. " : "Besides reviews, what a careful shopper can check before paying: tests and certificates, specs, results. ") + pw + "% of the CRO score.") +
         '<div class="pf-row">' + PF.items.map(function (i) { return '<span class="pf-i ' + (i.bad ? "bad" : i.ok ? "ok" : i.unk ? "unk" : "no") + '"' + (i.unk ? ' title="Loaded with JavaScript and didn\'t load for our reader"' : "") + "><i>" + (i.bad ? "✕" : i.ok ? "✓" : i.unk ? "?" : "–") + "</i>" + esc(i.label) + "</span>"; }).join("") + "</div>" +
         "</section>";
     }
@@ -1053,7 +1068,7 @@
   }
 
   /* ---------------- render ---------------- */
-  var G_ICON = { yes: "✓", partly: "!", no: "✕", confirm: "?" }, G_LABEL = { yes: "Answered", partly: "Partly", no: "Not answered", confirm: "Check" };
+  var G_ICON = { yes: "✓", partly: "!", no: "✕", confirm: "?", unread: "–" }, G_LABEL = { yes: "Answered", partly: "Partly", no: "Not answered", confirm: "Check", unread: "Couldn't read" };
   var TAG_LABEL = { seen: "Seen", estimate: "Estimate", confirm: "Confirm" };
   var P_LABEL = { must: "Must solve", should: "Should solve", basic: "Basics" };
   function tag(t) { return '<span class="tg-tag ' + esc(t) + '">' + esc(TAG_LABEL[t] || t) + "</span>"; }
@@ -1077,12 +1092,12 @@
   function rQuestions(G) {
     var pq = G.qs.filter(function (q) { return q.src === "product"; }), lq = G.qs.filter(function (q) { return q.src !== "product"; });
     var count = function (a, g) { return a.filter(function (q) { return q.g === g; }).length; };
-    var h = '<div class="tg-qsum"><span class="yes">' + count(G.qs, "yes") + " answered</span><span class=\"partly\">" + count(G.qs, "partly") + " partly</span><span class=\"no\">" + count(G.qs, "no") + " not answered</span>" + (count(G.qs, "confirm") ? '<span class="confirm">' + count(G.qs, "confirm") + " to check</span>" : "") + "</div>";
+    var h = '<div class="tg-qsum"><span class="yes">' + count(G.qs, "yes") + " answered</span><span class=\"partly\">" + count(G.qs, "partly") + " partly</span><span class=\"no\">" + count(G.qs, "no") + " not answered</span>" + (count(G.qs, "confirm") ? '<span class="confirm">' + count(G.qs, "confirm") + " to check</span>" : "") + (count(G.qs, "unread") ? '<span class="unread">' + count(G.qs, "unread") + " couldn't read (not counted)</span>" : "") + "</div>";
     if (pq.length) h += '<div class="tg-qgroup"><h3 class="an-h3">About this product' + (G.product ? ": " + esc(clip(G.product, 60)) : "") + "</h3>" + pq.map(rQuestion).join("") + "</div>";
     ["must", "should", "basic"].forEach(function (p) {
-      var a = lq.filter(function (q) { return q.p === p; }).sort(function (x, y) { return ({ no: 0, partly: 1, confirm: 2, yes: 3 })[x.g] - ({ no: 0, partly: 1, confirm: 2, yes: 3 })[y.g] || y.w - x.w; });
+      var a = lq.filter(function (q) { return q.p === p; }).sort(function (x, y) { return ({ no: 0, partly: 1, confirm: 2, unread: 3, yes: 4 })[x.g] - ({ no: 0, partly: 1, confirm: 2, unread: 3, yes: 4 })[y.g] || y.w - x.w; });
       if (!a.length) return;
-      h += '<div class="tg-qgroup"><h3 class="an-h3">' + P_LABEL[p] + ' <span class="tg-cnt">' + a.filter(function (q) { return q.g === "yes"; }).length + " of " + a.length + " answered</span></h3>" + (p === "basic" ? "<details class=\"tg-more\"><summary>Show " + a.length + " basics</summary>" + a.map(rQuestion).join("") + "</details>" : a.map(rQuestion).join("")) + "</div>";
+      h += '<div class="tg-qgroup"><h3 class="an-h3">' + P_LABEL[p] + ' <span class="tg-cnt">' + a.filter(function (q) { return q.g === "yes"; }).length + " of " + a.filter(function (q) { return q.g !== "unread"; }).length + " answered" + (a.some(function (q) { return q.g === "unread"; }) ? " · " + a.filter(function (q) { return q.g === "unread"; }).length + " couldn't read" : "") + "</span></h3>" + (p === "basic" ? "<details class=\"tg-more\"><summary>Show " + a.length + " basics</summary>" + a.map(rQuestion).join("") + "</details>" : a.map(rQuestion).join("")) + "</div>";
     });
     return '<section class="rp-sec" id="rp-questions">' + head("Buyer questions", "What " + esc(G.cat === "Other" ? "shoppers" : G.cat.toLowerCase() + " shoppers") + " ask before they pay", (G.qScore != null ? "The doubts buyers of this kind of product have before they pay, graded on your page with the words that answer them. Questions that don't apply to this product are left out. Must-solve doubts stop the sale." : G.qList ? "The doubts buyers of this kind of product have before they pay. Our AI grader didn't answer this time, so these are checked by keywords only: treat them as a first pass." : "The doubts " + (G.sub ? esc(G.sub.toLowerCase()) + " " : "") + "buyers have, from the Troopod barrier library" + (G.ai ? " plus questions written for this exact product" : "") + ", checked against what your page actually says. Must-solve doubts stop the sale.")) + h + "</section>";
   }
@@ -1207,6 +1222,20 @@
       '<div class="pl-wrap">' + side + phone + "</div></section>";
   }
 
+  /* everything we couldn't read, in one list: shown as our failure, never counted against the page */
+  function readFails(G) {
+    var out = [];
+    (G.qs || []).filter(function (q) { return q.g === "unread"; }).forEach(function (q) { out.push({ t: q.q, why: q.ev[0] || "" }); });
+    (G.rules || []).filter(function (r) { return r.st === "na" && /couldn.t|could not|didn.t load|didn't load/i.test(r.ev || ""); }).forEach(function (r) { out.push({ t: r.t, why: r.ev }); });
+    if (G.reviews && G.reviews.noLoad) out.push({ t: "Reviews", why: "Your reviews (" + G.reviews.noLoad.join(", ") + ") load with JavaScript and didn't load for our reader." });
+    if (G.unread) out.push({ t: "This page", why: G.unread });
+    return out;
+  }
+  function rReadFails(G) {
+    var f = readFails(G); if (!f.length) return "";
+    return '<div class="wb-card wb-fails"><div class="wb-ph"><div><h3>What we couldn\'t read (' + f.length + ')</h3><p>Our reader failed on these, so they are left out of your score and fixes. It is not a problem with your page. Check them on a phone; a re-scan may read them.</p></div></div><ul>' +
+      f.map(function (x) { return "<li><b>" + esc(x.t) + "</b>" + (x.why ? "<span>" + esc(clip(x.why, 220)) + "</span>" : "") + "</li>"; }).join("") + "</ul></div>";
+  }
   function render(G, R) {
     if (!G) return { html: "", nav: [] };
     var plan = rPlan(G, R);
@@ -1218,7 +1247,7 @@
     nav.push(["rp-questions", "Buyer questions", G.qs.filter(function (q) { return q.g === "no"; }).length], ["rp-levers", "Growth levers", G.levers.length]);
     if (G.peers.length) nav.push(["rp-peers", "Vs category leaders", G.peers.length]);
     if (G.confirm.length) nav.push(["rp-confirm", "Confirm with your team", G.confirm.length]);
-    var wb = G.scoreV === 4 && !G.unread ? { plan: rPlan(G, R, true), voice: rShort(G, R, { noTop: true }), questions: rQuestions(G), growth: rSnapshot(G, R) + rLevers(G) + rPeers(G) + rConfirm(G) } : null;
+    var wb = G.scoreV === 4 && !G.unread ? { fails: rReadFails(G), plan: rPlan(G, R, true), voice: rShort(G, R, { noTop: true }), questions: rQuestions(G), growth: rSnapshot(G, R) + rLevers(G) + rPeers(G) + rConfirm(G) } : null;
     return { html: html, nav: nav, services: rServices(G), short: rShort(G, R), wb: wb };
   }
   function wirePlan(root, G, opts) {

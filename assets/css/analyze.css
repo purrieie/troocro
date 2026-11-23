@@ -1248,3 +1248,14 @@ details[open] > summary .chev::before { transform: rotate(-135deg); top: 7px; }
   .wbc-act { flex-direction: row; margin-left: 50px; }
 }
 @media print { .wb-tabs, .wb-side, .wb-acts { display: none; } .wb-panel[hidden] { display: block; } .wb-grid { grid-template-columns: 1fr; } }
+
+/* v14.4: what we couldn't read: our failure, shown plainly, never counted */
+.tg-qsum .unread { color: var(--muted); }
+.tg-g.unread { background: rgba(255,255,255,0.08); color: var(--muted); }
+.tg-q.unread .tg-qt { color: var(--text-2); }
+.tg-q.unread .tg-gl { color: var(--muted); }
+.wb-fails { border-color: rgba(229,169,61,0.45); background: linear-gradient(90deg, rgba(229,169,61,0.08), var(--wb-s1) 70%); }
+.wb-fails h3 { color: #F3CF8A; }
+.wb-fails ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.wb-fails li { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--wb-s2); border: 1px solid var(--line); font-size: 13.5px; }
+.wb-fails li span { color: var(--muted); font-size: 12.5px; }

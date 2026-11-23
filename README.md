@@ -119,6 +119,14 @@ The list lives in `assets/js/troogrowth-lib.js` (`q13`). The question source is 
 
 Anything none of these can read is marked "couldn't read" and left out of the score, not scored as missing.
 
+**Couldn't read is never counted (v14.5).** The grader has a fifth outcome, U, for "couldn't read": the page points to the answer (a Price Breakup tab, Size Guide link, reviews heading or delivery check) but its contents didn't reach us.
+
+The same applies in two other cases:
+- On a page we could barely read, every "not answered" becomes "couldn't read".
+- When neither the real browser nor the script run worked, "not answered" for delivery, returns, reviews and warranty becomes "couldn't read".
+
+In those cases, failed delivery, returns or reviews rules and low proof are left out too. If the page names it (a Size Guide link, Price Breakup tab or returns section), the question counts as answered, because shoppers can open it. Everything we couldn't read and that the page doesn't name is listed in a "What we couldn't read" card as our reader's failure, and is never scored or turned into a fix.
+
 ## Backend (Supabase, free plan)
 
 Project: **TrooCRO** (`mrfixorpmhrnkxhqzesn`). Function URL is set in `assets/js/config.js`.

@@ -3,7 +3,8 @@
 // ?raw=1 keeps the scripts (only <base> is set and CSP/refresh metas dropped): the analyzer runs that copy in a
 // sandboxed frame with no same-origin access, to read reviews and text that the store draws with JavaScript.
 // ?render=1 returns the page as a real browser drew it (scripts run, page scrolled): Cloudflare Browser Rendering when its
-// token is set (CF_ACCOUNT_ID, CF_API_TOKEN), else the free r.jina.ai reader. Neither gets past a site that blocks bots.
+// token is set (CF_ACCOUNT_ID, CF_API_TOKEN; dormant until those secrets exist), else the free r.jina.ai reader. With Cloudflare
+// the page is also scrolled and its tabs and accordions are tapped (TAP_SCRIPT). Neither gets past a site that blocks bots.
 const ALLOWED_ORIGINS = [/^https:\/\/purrieie\.github\.io$/, /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 TrooCRO-Analyzer/1.0";
 const MAX = 3_000_000;
@@ -23,6 +24,19 @@ function publicUrl(s: string): URL | null {
   } catch { return null; }
 }
 function esc(s: string) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+// Runs inside the real browser (Cloudflare only): scroll to load lazy sections, then tap the tabs and accordions a shopper would
+// (price breakup, size guide, product details, delivery, returns, FAQ...) and write what each one opened into #troo-tapped,
+// so the returned HTML carries it. Never taps links that leave the page, or cart, login, share, chat or form buttons.
+const TAP_SCRIPT = `(async()=>{const w=t=>new Promise(r=>setTimeout(r,t));const it=e=>{try{return e.innerText||""}catch(x){return""}};
+for(let y=0;y<document.body.scrollHeight&&y<20000;y+=700){scrollTo(0,y);await w(110)}scrollTo(0,0);await w(300);
+const RX=/price ?break|break ?up|size ?(guide|chart)|ring size|find (your|my) size|product (details|info|description)|specification|specs\\b|description|details|delivery|shipping|return|exchange|warranty|guarantee|ingredient|how to use|directions|care|know more|view more|read more|see more|show more|more info|faq|composition|material|fabric|dimension|measurement|certific|nutrition|in the box|assurance|policy/i;
+const NO=/add to (bag|cart)|buy now|check ?out|login|log in|sign ?(in|up)|wishlist|share|notify|subscribe|write a review|apply|search|close|cancel|pay|book|call|whatsapp|chat|language|country|currency|menu/i;
+const seen={},c=[];const ok=e=>{const t=it(e).replace(/\\s+/g," ").trim();if(!t||t.length>44||!RX.test(t)||NO.test(t)||seen[t.toLowerCase()])return;if(e.closest("header,nav,footer,form"))return;if(e.tagName==="A"){const h=e.getAttribute("href")||"";if(h&&!/^(#|javascript:)/i.test(h))return}if(e.type==="submit")return;const r=e.getBoundingClientRect();if(!r.width||!r.height)return;seen[t.toLowerCase()]=1;c.push([e,t])};
+document.querySelectorAll("[role=tab],[aria-expanded=false],summary,button,[role=button],a,[data-toggle],[data-bs-toggle]").forEach(e=>{if(c.length<16)ok(e)});
+[...document.querySelectorAll("div,span,p,li,h2,h3,h4,h5,label")].slice(0,5000).forEach(e=>{if(c.length<16&&e.children.length<=3&&getComputedStyle(e).cursor==="pointer")ok(e)});
+const out=[];const L=t=>{const o={};String(t).split(/\\n+/).forEach(x=>{x=x.replace(/\\s+/g," ").trim();if(x.length>1)o[x]=1});return o};
+for(const [e,t] of c){const b=L(it(document.body));try{e.scrollIntoView({block:"center"});e.click()}catch(x){}await w(600);const a=Object.keys(L(it(document.body))).filter(x=>!b[x]);if(a.length)out.push(t+": "+a.join(". ").slice(0,900));document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))}
+const s=document.createElement("section");s.id="troo-tapped";s.textContent=out.join(" | ").slice(0,8000);document.body.appendChild(s)})()`;
 const FIX_CSS = "<style>html{scroll-behavior:auto!important}.scroll-trigger,[data-aos],.animate--slide-in,.animate--fade-in,.reveal,.lazyload,.lazyloading{opacity:1!important;transform:none!important;visibility:visible!important}</style>";
 Deno.serve(async (req: Request) => {
   const c = cors(req.headers.get("origin"));
@@ -40,7 +54,7 @@ Deno.serve(async (req: Request) => {
         const r = await fetch("https://api.cloudflare.com/client/v4/accounts/" + acc + "/browser-rendering/content", {
           method: "POST", signal: AbortSignal.timeout(40000), headers: { "Authorization": "Bearer " + tok, "Content-Type": "application/json" },
           body: JSON.stringify({ url: cur.href, userAgent: UA.replace(" TrooCRO-Analyzer/1.0", ""), viewport: { width: 390, height: 844 }, gotoOptions: { waitUntil: "networkidle2", timeout: 30000 }, rejectResourceTypes: ["image", "media", "font"],
-            addScriptTag: [{ content: "(async()=>{for(let y=0;y<document.body.scrollHeight;y+=700){window.scrollTo(0,y);await new Promise(r=>setTimeout(r,120))}window.scrollTo(0,0)})()" }], waitForTimeout: 2500 }),
+            addScriptTag: [{ content: TAP_SCRIPT }], waitForTimeout: 9000 }),
         });
         const d = await r.json().catch(() => null);
         if (r.ok && d && d.success && typeof d.result === "string" && d.result.length > 500) return json({ url: cur.href, html: d.result.slice(0, MAX), by: "cloudflare" }, 200, { "Cache-Control": "public, max-age=600" });

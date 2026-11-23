@@ -113,7 +113,7 @@ The list lives in `assets/js/troogrowth-lib.js` (`q13`). The question source is 
 **Page reading (v14.2).** Each scan reads the page in up to five ways, falling back one step at a time:
 1. The page's own HTML.
 2. What sits behind a tap in that HTML: tabs, pop-ups, accordions, and the product data in the store's code (price breakup, rating, return and warranty lines).
-3. A sealed copy that runs the store's scripts.
+3. A sealed copy that runs the store's scripts. After it scrolls the page, it taps up to 16 tabs, accordions and controls like Price breakup, Size guide, Product details, Delivery, Returns and FAQ, and keeps the text each one opens. It never taps links that leave the page, or cart, login, share, chat or form buttons.
 4. A real-browser render (`troocro-page-view?render=1`). This uses Cloudflare Browser Rendering when `CF_ACCOUNT_ID`/`CF_API_TOKEN` are set, otherwise the free r.jina.ai reader. A bot-check page counts as a failed render.
 5. Only if the render fails: the grader reads Google PageSpeed's full-page screenshot, one small vision call.
 

@@ -668,14 +668,60 @@
         outer.forEach(function (n) { var x = it(n); if (x.length > 12) main = main.split(x).join("\n"); });
       } catch (e) { main = all; }
       firstProbe();
-      try { parent.postMessage({ type: "troo-live", id: ID, fin: !!fin, why: why, ms: Date.now() - t0, title: document.title, h1: h1, all: all.slice(0, 60000), main: main.slice(0, 40000), rv: rv, apps: ap, first: FIRST }, "*"); } catch (e) { /* gone */ }
+      try { parent.postMessage({ type: "troo-live", id: ID, fin: !!fin, why: why, ms: Date.now() - t0, title: document.title, h1: h1, all: all.slice(0, 60000), main: main.slice(0, 40000), rv: rv, apps: ap, first: FIRST, tapped: TAPPED.join(" | ").slice(0, 7000) }, "*"); } catch (e) { /* gone */ }
+    }
+    /* taps (v14.2): open the tabs, accordions and "size guide / price breakup" style controls a shopper would tap, and keep the text
+       each one reveals. Only controls that open content on the page: no links that leave it, no cart, login, share or form buttons. */
+    var TAPPED = [], tapping = false;
+    var TAP_RX = /price ?break|break ?up|size ?(guide|chart)|ring size|find (your|my) size|product (details|info|description)|specification|specs\b|description|details|delivery|shipping|return|exchange|warranty|guarantee|ingredient|how to use|directions|care|know more|view more|read more|see more|show more|more info|faq|composition|material|fabric|dimension|measurement|certific|nutrition|in the box|what'?s inside|assurance|policy|offers?\b/i;
+    var TAP_NO = /add to (bag|cart)|buy now|check ?out|login|log in|sign ?(in|up)|wishlist|share|notify|subscribe|write a review|apply|search|close|cancel|pay|book|call|whatsapp|chat|language|country|currency|menu/i;
+    function lines(t) { var o = {}; String(t || "").split(/\n+/).forEach(function (x) { x = x.replace(/\s+/g, " ").trim(); if (x.length > 1) o[x] = 1; }); return o; }
+    function taps(done) {
+      if (tapping) return; tapping = true;
+      var cands = [], seenT = {};
+      q("[role=tab],[aria-expanded=false],summary,button,[role=button],a,[data-toggle],[data-bs-toggle],[class*=accordion] [class*=title],[class*=accordion] [class*=header],[class*=tab] li,[class*=tab] span,[class*=collapsible]").slice(0, 2500).forEach(function (el) {
+        try {
+          if (cands.length >= 16) return;
+          var tx = it(el).replace(/\s+/g, " ").trim(); if (!tx || tx.length > 44 || !TAP_RX.test(tx) || TAP_NO.test(tx) || seenT[tx.toLowerCase()]) return;
+          if (el.closest && el.closest("header,nav,footer,[class*=footer],[class*=header] nav,form")) return;
+          if (el.tagName === "A") { var hr = el.getAttribute("href") || ""; if (hr && !/^(#|javascript:)/i.test(hr)) return; }
+          if (el.type === "submit") return;
+          var r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
+          seenT[tx.toLowerCase()] = 1; cands.push({ el: el, tx: tx });
+        } catch (e) { /* skip */ }
+      });
+      /* React and Vue tabs are often plain divs with a click handler: take short pointer-cursor elements too */
+      if (cands.length < 16) q("div,span,p,li,h2,h3,h4,h5,label").slice(0, 5000).forEach(function (el) {
+        try {
+          if (cands.length >= 16 || el.children.length > 3) return;
+          var tx = it(el).replace(/\s+/g, " ").trim(); if (!tx || tx.length > 44 || !TAP_RX.test(tx) || TAP_NO.test(tx) || seenT[tx.toLowerCase()]) return;
+          if (el.closest && el.closest("header,nav,footer,[class*=footer],form,a[href]:not([href^='#'])")) return;
+          if (getComputedStyle(el).cursor !== "pointer") return;
+          var r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
+          seenT[tx.toLowerCase()] = 1; cands.push({ el: el, tx: tx });
+        } catch (e) { /* skip */ }
+      });
+      var i = 0;
+      (function next() {
+        if (i >= cands.length || sent) { tapping = false; return done(); }
+        var c = cands[i++], before = lines(it(document.body));
+        try { c.el.scrollIntoView({ block: "center" }); c.el.click(); } catch (e) { /* skip */ }
+        setTimeout(function () {
+          try {
+            var after = lines(it(document.body)), add = Object.keys(after).filter(function (x) { return !before[x]; });
+            if (add.length) TAPPED.push(c.tx + ": " + add.join(". ").slice(0, 900));
+            document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+          } catch (e) { /* skip */ }
+          setTimeout(next, 120);
+        }, 520);
+      })();
     }
     function tick() {
       if (sent) return;
       var de = document.documentElement, H = Math.max(de.scrollHeight || 0, document.body ? document.body.scrollHeight : 0), vh = window.innerHeight || 844;
       y = Math.min(H, y + 640); window.scrollTo(0, y);
       var n = it(document.body).length; if (Math.abs(n - last) < 40) calm++; else calm = 0; last = n;
-      if ((y + vh >= H - 10 && calm >= 4) || Date.now() - t0 > 17000) { window.scrollTo(0, 0); setTimeout(function () { snap("done", true); }, 400); return; }
+      if ((y + vh >= H - 10 && calm >= 4) || Date.now() - t0 > 12000) { taps(function () { window.scrollTo(0, 0); setTimeout(function () { snap("done", true); }, 300); }); return; }
       if (++ticks % 4 === 0) snap("progress", false);
       setTimeout(tick, 420);
     }
@@ -1055,7 +1101,7 @@
     });
     gx.textP = Promise.all([staticP, Promise.resolve(S.liveP).catch(function () { return null; }), gx.renderP]).then(function (x) {
       var t = win.TrooGrowth && win.TrooGrowth.mergeLive ? win.TrooGrowth.mergeLive(x[0], x[1]) : x[0];
-      if (t && S.rawHtml && win.TrooGrowth.hiddenOf) { var rh = win.TrooGrowth.hiddenOf(S.rawHtml); if (rh) t.hid = (rh + (t.hid ? ". " + t.hid : "")).slice(0, 7000); }
+      if (t && S.rawHtml && win.TrooGrowth.hiddenOf) { var rh = win.TrooGrowth.hiddenOf(S.rawHtml); if (rh) t.hid = ((t.hid ? t.hid + ". " : "") + rh).slice(0, 9000); }
       return win.TrooGrowth && win.TrooGrowth.mergeRender ? win.TrooGrowth.mergeRender(t, x[2]) : t;
     });
     return gx;
@@ -1104,7 +1150,7 @@
       var POL = /(deliver|dispatch|ship|pincode|cash on delivery|\bcod\b|return|exchange|refund|replace|warrant|guarantee|size|fit|measure|dimension|care|wash|ingredient|material|certif|hallmark|tested|expiry|shelf life|in the box|includes)/i;
       var rest = (h0 > 300 ? main.slice(0, h0 - 300) + " " : "") + main.slice(Math.max(0, h0 - 300) + 7500), pol = [], seen = {};
       rest.split(/(?<=[.!?])\s+/).forEach(function (x) { var k = x.slice(0, 60).toLowerCase(); if (x.length > 12 && x.length < 400 && POL.test(x) && !/[\u201c\u201d"]|\b(?:I|I'm|my|me)\b/.test(x) && !seen[k]) { seen[k] = 1; pol.push(x); } });
-      var hid = t.hid ? " On the page behind a tap (tabs, pop-ups, product data): " + t.hid.slice(0, 3200) + "." : "";
+      var hid = t.hid ? " On the page behind a tap (tabs, pop-ups, product data): " + t.hid.slice(0, 4200) + "." : "";
       var text = head.slice(0, 6500) + (ex ? " " + ex.slice(0, 2000) : "") + hid + (pol.length ? " " + pol.join(" ") : "");
       var f = (r.cro && r.cro.f) || {}, facts = [];
       if (f.gallery != null) facts.push(f.gallery + " product photos in the gallery");

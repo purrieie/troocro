@@ -81,6 +81,9 @@
   function mergeRender(t, d) {
     t = t || { all: "", main: "", h1: "" };
     if (!d || !d.html) { t.render = { ok: false }; return t; }
+    /* Cloudflare's render taps the page's tabs and writes what opened into #troo-tapped: keep it with the behind-a-tap facts */
+    var tapTxt = ""; try { var dd = new DOMParser().parseFromString(d.html, "text/html"), tp = dd.getElementById("troo-tapped"); if (tp) { tapTxt = tp.textContent || ""; tp.remove(); d = { html: dd.documentElement.outerHTML, by: d.by }; } } catch (e) { /* ignore */ }
+    if (tapTxt) t.hid = ("Tapped " + tapTxt + (t.hid ? ". " + t.hid : "")).slice(0, 9000);
     var r = pageText(d.html), sm = String(t.main || ""), low = sm.toLowerCase(), seen = {};
     var extra = String(r.main || "").replace(/([.!?])\s+/g, "$1\u0001").split("\u0001").filter(function (x) {
       x = x.trim(); if (x.length < 4) return false; var k = x.toLowerCase().slice(0, 50).replace(/\.$/, ""); if (seen[k] || low.indexOf(k) >= 0) return false; seen[k] = 1; return true;
@@ -110,6 +113,8 @@
     if (mode === "replaced") { t.main = lines.join(" ").slice(0, 60000); t.all = String(L.all || "").replace(/\s+/g, " ").slice(0, 120000) || t.main; }
     else if (extra) { t.main = (sm + " " + extra).slice(0, 90000); t.all = (String(t.all || "") + " " + extra).slice(0, 140000); }
     if (!t.h1 && L.h1) t.h1 = L.h1;
+    /* what opened when we tapped its tabs, accordions and size or price-breakup controls */
+    if (L.tapped) t.hid = ("Tapped " + L.tapped + (t.hid ? ". " + t.hid : "")).slice(0, 9000);
     t.live = { ok: true, mode: mode, extra: extra.slice(0, 6000), added: extra.length, rv: L.rv || null, apps: L.apps || [], ms: L.total || L.ms || 0, first: L.first || null };
     return t;
   }

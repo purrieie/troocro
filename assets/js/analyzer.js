@@ -135,7 +135,8 @@
   var QS = [
     { id: "category", title: "What do you sell?", sub: "It picks your category checks and the benchmark we compare you with.", cols: 3, opts: CATS.map(function (c) { return [c, c]; }) },
     { id: "aovBand", title: "What's a typical order worth?", sub: "Stores at different price points convert very differently.", cols: 2, opts: [["< ₹500", "Under ₹500"], ["₹500–₹2,000", "₹500 to ₹2,000"], ["₹2,000–₹5,000", "₹2,000 to ₹5,000"], ["₹5,000+", "Over ₹5,000"]] },
-    { id: "goal", title: "What matters most right now?", sub: "Your first tests are ordered around it.", cols: 1, opts: [["conversion", "More orders from the same traffic"], ["aov", "Bigger baskets"], ["ads", "Better return on ad spend"], ["speed", "A faster store"], ["ai", "Showing up in AI answers"]] },
+    { id: "goal", title: "What matters most right now?", sub: "Your first tests are ordered around it.", cols: 1, opts: [["conversion", "More orders from the same traffic"], ["aov", "Bigger baskets"], ["ads", "Better return on ad spend"], ["speed", "A faster store"], ["ai", "Showing up in AI answers"], ["repeat", "More repeat buyers"]] },
+    { id: "traffic", title: "Where do most visitors come from?", sub: "Paid, search and social visitors need different fixes first.", cols: 2, opts: [["ads", "Paid ads (Meta, Google)"], ["search", "Google search"], ["social", "Instagram and influencers"], ["mix", "A mix, or not sure"]] },
     { id: "visitors", title: "How many people visit this page a month?", sub: "A rough guess is fine. It dates your test plan.", cols: 1, opts: [["5000", "Under 10,000"], ["30000", "10,000 to 50,000"], ["120000", "50,000 to 2 lakh"], ["300000", "Over 2 lakh"], ["", "Not sure"]] },
     { id: "competitors", title: "Who do shoppers compare you with?", sub: "Optional. Add up to two sites and we'll show where they're ahead.", type: "comp" }
   ];
@@ -144,7 +145,7 @@
   var ICON_ARROW = '<svg width="14" height="14" aria-hidden="true"><use href="#i-arrow"/></svg>';
 
   function setupQuestions() {
-    QA = { competitors: ["", ""] }; qi = 0;
+    QA = { competitors: ["", ""], ad: "" }; qi = 0;
     var st = $("[data-qz-status]"); st.textContent = "Reading your page"; st.classList.add("live");
     $("[data-qz-url]").textContent = S.host;
     var t0 = $("[data-qz-title]"); t0.textContent = "Opening " + S.host + "…"; t0.classList.remove("desc"); t0.hidden = false;
@@ -167,6 +168,7 @@
     var d = detectedFor(q.id);
     if (d) return d;
     if (q.id === "goal") return "conversion";
+    if (q.id === "traffic") return "mix";
     return undefined;
   }
   function qHtml(q, i) {
@@ -174,7 +176,7 @@
     if (q.type === "comp") {
       h += '<div class="qz-comp">' + [0, 1].map(function (k) {
         return '<label class="an-input qz-inp"><span class="pfx">https://</span><span class="sr-only">Competitor ' + (k + 1) + '</span><input type="text" inputmode="url" autocapitalize="none" spellcheck="false" data-qz-comp="' + k + '" placeholder="' + (k ? "another.com" : "competitor.com") + '" value="' + esc(QA.competitors[k] || "") + '"></label>';
-      }).join("") + '</div><div class="an-err" data-qz-err role="alert"></div><div class="qz-go"><button class="btn btn-primary qz-start" type="button" data-qz-start>Start my analysis ' + ICON_ARROW + '</button><span class="qz-enter">or press <kbd>Enter</kbd></span></div>';
+      }).join("") + '</div><label class="an-input qz-inp qz-ad"><span class="sr-only">One of your ad headlines</span><input type="text" maxlength="160" data-qz-ad placeholder="Optional: paste one ad headline and we\'ll check the page matches it" value="' + esc(QA.ad || "") + '"></label><div class="an-err" data-qz-err role="alert"></div><div class="qz-go"><button class="btn btn-primary qz-start" type="button" data-qz-start>Start my analysis ' + ICON_ARROW + '</button><span class="qz-enter">or press <kbd>Enter</kbd></span></div>';
       return h;
     }
     var det = detectedFor(q.id), cur = currentVal(q);
@@ -239,6 +241,9 @@
       aovBand: skip ? (det.aovBand || "") : (QA.aovBand || det.aovBand || ""),
       goal: skip ? "conversion" : (QA.goal || "conversion"),
       visitors: skip ? 0 : (+QA.visitors || 0),
+      catYou: !skip && !!QA.category,
+      traffic: skip ? "" : (QA.traffic || ""),
+      ad: skip ? "" : String(QA.ad || "").replace(/\s+/g, " ").trim().slice(0, 160),
       competitors: comps.slice(0, 2)
     };
     if (S.inputs.category === "Other") S.inputs.category = "";
@@ -253,6 +258,7 @@
     stageEl.addEventListener("input", function (e) {
       var k = e.target.getAttribute && e.target.getAttribute("data-qz-comp");
       if (k != null) { QA.competitors[+k] = e.target.value; var er = $("[data-qz-err]"); if (er) er.textContent = ""; }
+      if (e.target.hasAttribute && e.target.hasAttribute("data-qz-ad")) QA.ad = e.target.value;
     });
   }
   var qBack = $("[data-qz-back]"), qSkipAll = $("[data-qz-skip]");
@@ -678,19 +684,71 @@
   }
   win.addEventListener("resize", function () { if (doc.body.getAttribute("data-an-view") === "scan") AGENTS.forEach(function (a) { if (agState[a.id] !== "run") park(a.id); }); });
 
+  /* Google PageSpeed: 3 runs on mobile and 3 on desktop in parallel, averaged (Lighthouse varies run to run).
+     We wait for every run up to 25s after the first mobile result, then average whatever came back. */
+  function avgPsi(list) {
+    list = list.filter(function (d) { return d && d.scores && d.scores.performance != null; });
+    if (!list.length) return null;
+    var mean = list.reduce(function (s, d) { return s + d.scores.performance; }, 0) / list.length;
+    var base = list.slice().sort(function (x, y) { return Math.abs(x.scores.performance - mean) - Math.abs(y.scores.performance - mean); })[0];
+    var out = Object.assign({}, base, { scores: Object.assign({}, base.scores), metrics: Object.assign({}, base.metrics), runs: list.length });
+    ["performance", "accessibility", "seo", "bestPractices"].forEach(function (k) { var v = list.map(function (d) { return d.scores[k]; }).filter(function (x) { return x != null; }); if (v.length) out.scores[k] = Math.round(v.reduce(function (s, x) { return s + x; }, 0) / v.length); });
+    ["lcp", "fcp", "cls", "tbt", "si", "ttfb", "weightKb", "requests"].forEach(function (k) { var v = list.map(function (d) { return d.metrics && d.metrics[k]; }).filter(function (x) { return typeof x === "number"; }); if (v.length) { var m = v.reduce(function (s, x) { return s + x; }, 0) / v.length; out.metrics[k] = k === "cls" ? Math.round(m * 1000) / 1000 : Math.round(m); } });
+    return out;
+  }
   function runPsi(url) {
     var skipP = new Promise(function (res) { S.psiSkip = function () { res(null); }; });
-    var p;
-    if (S.scan && S.scan.psiServer) {
-      p = api("/psi?url=" + encodeURIComponent(url) + "&strategy=mobile", null, { timeout: 110000 });
-    } else if (win.TrooPSI && win.AbortController) {
+    if (!win.TrooPSI || !win.AbortController) return Promise.resolve(null);
+    var key = CFG.psiKey || "", n = key ? 3 : 1;
+    function one(strategy) {
       var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 95000);
-      p = fetch(win.TrooPSI.psiUrl(url, "mobile"), { signal: ctl.signal })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (d) { clearTimeout(t); return d && d.lighthouseResult ? win.TrooPSI.compactPsi(d, "mobile") : null; });
-    } else p = Promise.resolve(null);
-    p = p.then(function (d) { return d && d.scores && d.scores.performance != null ? d : null; }).catch(function () { return null; });
+      return fetch(win.TrooPSI.psiUrl(url, strategy, key), { signal: ctl.signal })
+        .then(function (r) { if (!r.ok && win.console) console.warn("PageSpeed " + strategy + " " + r.status); return r.ok ? r.json() : null; })
+        .then(function (d) { clearTimeout(t); return d && d.lighthouseResult ? win.TrooPSI.compactPsi(d, strategy) : null; })
+        .catch(function () { clearTimeout(t); return null; });
+    }
+    var p = new Promise(function (resolve) {
+      var mob = [], desk = [], left = 2 * n, done = false, grace = null;
+      function finish() { if (done) return; done = true; clearTimeout(grace); var m = avgPsi(mob); if (m) { var d = avgPsi(desk); if (d) m.desktop = { scores: d.scores, metrics: d.metrics, runs: d.runs }; } resolve(m); }
+      function got(list, d) { list.push(d); left--; if (left <= 0) finish(); else if (d && list === mob && !grace) grace = setTimeout(finish, 25000); }
+      /* staggered a few seconds apart: identical requests fired at once are more likely to be refused */
+      for (var i = 0; i < n; i++) (function (k) { setTimeout(function () { one("mobile").then(function (d) { got(mob, d); }); one("desktop").then(function (d) { got(desk, d); }); }, k * 3000); })(i);
+    });
     return Promise.race([p, skipP]);
+  }
+  /* TrooGrowth reads (troogrowth edge function): site crawl, trust check, product questions, category leaders */
+  function gapi(path, body, timeout) {
+    var G = String(CFG.growth || "").replace(/\/+$/, "");
+    if (!G || !win.AbortController) return Promise.resolve(null);
+    var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, timeout || 60000);
+    var init = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal } : { signal: ctl.signal };
+    return fetch(G + path, init).then(function (r) { return r.json(); }).then(function (d) { clearTimeout(t); return d && !d.error && !d.fallback ? d : null; }).catch(function () { clearTimeout(t); return null; });
+  }
+  function startGrowthReads() {
+    var gx = S.gx = { t0: Date.now() };
+    gx.crawlP = gapi("/crawl?url=" + encodeURIComponent(S.url), null, 70000);
+    gx.trustP = gapi("/trust", { url: S.url }, 50000);
+    gx.textP = S.viewP.then(function (v) { return v && v.html && win.TrooGrowth ? win.TrooGrowth.pageText(v.html) : null; }).catch(function () { return null; });
+    return gx;
+  }
+  function growthAfterScan(r) {
+    var gx = S.gx; if (!gx || !win.TrooGrowth) return;
+    var p = r.page || {}, mk = win.TrooGrowth.marketOf(r);
+    var catP = gx.textP.then(function (t) { return win.TrooGrowth.catOf({ page: p, inputs: S.inputs }, { text: t || {} }).cat; });
+    gx.peersP = catP.then(function (cat) { return cat && cat !== "Other" ? gapi("/peers?cat=" + encodeURIComponent(cat) + "&market=" + mk + "&exclude=" + encodeURIComponent(hostOf(r.url)), null, 30000) : null; });
+    gx.insightP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP]).then(function (x) {
+      var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[2] || "";
+      if (!t || !t.main || t.main.length < 300) return null;
+      var text = (prod.desc && t.main.indexOf(prod.desc.slice(0, 40)) < 0 ? prod.desc.slice(0, 1200) + " " : "") + t.main;
+      var sub = win.TrooGrowth.subOf(cat, [p.title, t.h1, prod.title, prod.type].join(" "));
+      return gapi("/insight", { url: r.url, category: cat, sub: sub || "", market: mk, pageType: p.pageType, title: p.title, product: prod.title || t.h1 || "", price: prod.price ? (p.currency === "USD" ? "$" : "Rs ") + prod.price : p.aov ? (p.currency === "USD" ? "$" : "Rs ") + p.aov : "", text: text.slice(0, 4500), policy: tr.policyText || "" }, 45000);
+    });
+  }
+  async function growthCtx(capMs) {
+    var gx = S.gx || {}, cap = function (pr, ms) { return Promise.race([pr || Promise.resolve(null), sleep(ms).then(function () { return null; })]); };
+    var left = Math.max(4000, capMs);
+    var x = await Promise.all([cap(gx.textP, 3000), cap(gx.crawlP, left), cap(gx.trustP, left), cap(gx.insightP, left), cap(gx.peersP, left)]);
+    return { text: x[0] || { all: "", main: "", h1: "" }, crawl: x[1], trust: x[2] && !x[2].error ? x[2] : null, insight: x[3], peers: x[4], side: S.sideTxt || "", sideMain: S.sideMain || "" };
   }
   function compactComp(c) {
     var p = c.page || {};
@@ -735,6 +793,8 @@
     S.viewP = fetchView(S.url);
     S.viewReady = new Promise(function (res) { S._viewRes = res; });
     S.croP = S.viewP.then(function (v) { return v && v.html ? measureCro(v.html) : null; });
+    S.sideTxt = ""; S.sideMain = "";
+    startGrowthReads();
     /* a second page of the same site: the homepage for a product page, one product page for anything else */
     S.sideP = Promise.all([S.viewP, S.croP]).then(function (x) {
       var v = x[0], m0 = x[1];
@@ -743,7 +803,7 @@
       if (/\/products?\/|\/p\/|\/dp\//i.test(S.url)) { type = "HOME"; try { link = new URL("/", base).href; } catch (e) { link = null; } }
       else { type = "PDP"; link = productLinkOf(v.html, base); }
       if (!link) return null;
-      return fetchView(link).then(function (pv) { return pv && pv.html ? measureCro(pv.html) : null; }).then(function (m) { return m && m.f ? { f: m.f, url: link, type: type } : null; });
+      return fetchView(link).then(function (pv) { if (pv && pv.html && win.TrooGrowth) { var stx = win.TrooGrowth.pageText(pv.html); S.sideTxt = stx.all.slice(0, 40000); S.sideMain = stx.main.slice(0, 20000); } return pv && pv.html ? measureCro(pv.html) : null; }).then(function (m) { return m && m.f ? { f: m.f, url: link, type: type } : null; });
     }).catch(function () { return null; });
     buildStages();
     warmStart();
@@ -772,6 +832,7 @@
       catch (e) { /* keep the first read */ }
     }
     S.scan = r;
+    growthAfterScan(r);
     var lib = r.library || { signals: {}, barriers: {}, rootCauses: {} };
     rescore(r, lib.signals);
     var p = r.page || {};
@@ -959,6 +1020,20 @@
     if (cro && cro.kind === "blend" && sideM && sideM.f) addSideFindings(S.report, sideM, cro.side.type);
     if (cro) { S.report.cro = { score: cro.score, up: cro.up, down: cro.down, f: cro.f, v: 4, n: cro.n, kind: cro.kind, labels: cro.labels, page: cro.page, side: cro.side }; addFeed("act", "Benchmarked the page", (lead ? "Visitor experience " : "Shopper experience ") + cro.score + "/100 against " + cro.n + " " + (lead ? "fintech, healthtech and service sites" : "sites") + " we measured the same way", "", "plan"); }
     else addFeed("info", "Limited score", "We couldn't measure the page on a phone, so the score uses its code only", "", "plan");
+    if (win.TrooGrowth) {
+      setAgent("plan", null, "Lining up buyer questions, policies and category leaders");
+      try {
+        var gctx = await growthCtx(Math.max(6000, 30000 - (Date.now() - (S.gx ? S.gx.t0 : Date.now())) / 4));
+        S.report.growth = win.TrooGrowth.build(S.report, gctx);
+        var GR = S.report.growth, nNo = GR.qs.filter(function (q) { return q.g === "no"; }).length;
+        if (gctx.crawl && gctx.crawl.pages) addFeed("act", "Read " + plural(gctx.crawl.pages.filter(function (x) { return x.status === 200; }).length, "page") + " from your sitemap", "Titles, schema, canonical tags and AI access, page by page", "", "search");
+        if (gctx.trust && gctx.trust.facts) addFeed((gctx.trust.contradictions || []).length ? "fail" : "act", "Compared your policies with the page", (gctx.trust.contradictions || []).length ? plural(gctx.trust.contradictions.length, "conflict") + " between what the page promises and what the policy says" : "No conflicts between the page and " + plural((gctx.trust.facts.policies || []).length, "policy page"), "", "conv");
+        if (gctx.insight && gctx.insight.questions) addFeed("act", "Wrote " + plural(gctx.insight.questions.length, "question") + " for this product", clip2(gctx.insight.questions.map(function (q) { return q.q; }).join(" · "), 120), "", "barrier");
+        addFeed(nNo ? "fail" : "pass", plural(GR.qs.length, "buyer question") + " checked for " + GR.cat, nNo ? plural(nNo, "question") + " not answered on the page" : "Every question has an answer on the page", "", "barrier");
+        if (GR.peers.length) addFeed("act", "Benchmarked against " + GR.peers.map(function (x) { return x.host; }).join(" and "), "Category leaders, measured the same way", "", "market");
+        if (GR.levers[0]) addFeed("act", "Top lever: " + GR.levers[0].name, GR.levers[0].what, "", "plan");
+      } catch (eG) { if (win.console) console.warn("growth", eG); }
+    }
     var C = compute(S.report);
     var T = testsOf(S.report, findingsOf(S.report));
     for (var ti = 0; ti < T.length; ti++) {
@@ -1754,16 +1829,34 @@
     h += "</section>";
 
     /* body: rail + main */
-    var nav = [["rp-findings", "What’s costing sales", F.length], ["rp-tests", "First tests and plan", T.length], ["rp-beyond", "Speed, search and AI", ""]];
-    if (hasComp) nav.push(["rp-compare", "Competitors", R.comps.length]);
-    nav.push(["rp-worth", "What a lift is worth", ""], ["rp-next", "Next step", ""]);
+    var GR = R.growth && win.TrooGrowth ? win.TrooGrowth.render(R.growth, R) : null;
+    var nav;
+    if (GR) {
+      nav = GR.nav.slice();
+      if (T.length) nav.push(["rp-tests", "Tests to run", T.length]);
+      nav.push(["rp-beyond", "Speed, search and AI details", ""]);
+      if (hasComp) nav.push(["rp-compare", "Your competitors", R.comps.length]);
+      nav.push(["rp-next", "Next step", ""]);
+    } else {
+      nav = [["rp-findings", "What’s costing sales", F.length], ["rp-tests", "First tests and plan", T.length], ["rp-beyond", "Speed, search and AI", ""]];
+      if (hasComp) nav.push(["rp-compare", "Competitors", R.comps.length]);
+      nav.push(["rp-worth", "What a lift is worth", ""], ["rp-next", "Next step", ""]);
+    }
     h += '<div class="rp-body"><nav class="rp-rail" aria-label="In this report"><span class="an-label">In this report</span>' + nav.map(function (n, i) { return '<a href="#' + n[0] + '" data-rail="' + n[0] + '"' + (i === 0 ? ' class="on"' : "") + "><span>" + esc(n[1]) + "</span>" + (n[2] !== "" ? "<i>" + n[2] + "</i>" : "") + "</a>"; }).join("") + '<a class="btn btn-primary btn-sm rp-rail-cta" href="#rp-next">Fix it with TrooCRO</a></nav><div class="rp-main">';
-    h += rpFindings(R, F, L, host, passes);
-    if (T.length) h += rpTests(R, T, L, host, created);
-    h += rpBeyond(R, host);
-    if (hasComp) h += compSection(R);
-    h += rpWorth(R);
-    h += rpNext(R, C, host);
+    if (GR) {
+      h += GR.html;
+      if (T.length) h += rpTests(R, T, L, host, created);
+      h += rpBeyond(R, host);
+      if (hasComp) h += compSection(R);
+      h += rpNext(R, C, host, GR.services);
+    } else {
+      h += rpFindings(R, F, L, host, passes);
+      if (T.length) h += rpTests(R, T, L, host, created);
+      h += rpBeyond(R, host);
+      if (hasComp) h += compSection(R);
+      h += rpWorth(R);
+      h += rpNext(R, C, host);
+    }
     var nChecks = (R.checks || []).length;
     h += '<div class="an-foot-note"><p>This analysis ran on a lightweight version of the TrooCRO engine, from your page’s public HTML' + (R.psi ? " and Google PageSpeed" : "") + ". It checked " + plural(nChecks, "signal") + " that apply to a " + esc((PAGE_TYPE[P.pageType] || "page").toLowerCase()) + " in the TrooCRO library. A full TrooCRO diagnosis covers every page type, your analytics and funnel data, and all 937 signals across 79 buyer barriers.</p><p>Benchmarks come from the TrooCRO category benchmark library. Nothing was installed on your store.</p></div>";
     h += "</div></div></div></div>";
@@ -2290,12 +2383,12 @@
     if (b) h += '<div class="rp-bench"><span class="an-label">Typical for ' + esc(b.category) + " at " + esc(bandLabel(b.band)) + '</span><div class="rp-bench-row">' + [["Add-to-cart rate", b.atc], ["Cart to checkout", b.cartToCheckout], ["Checkout to purchase", b.checkoutToPurchase], ["Store conversion", b.cvr]].map(function (x) { return "<div><b>" + esc(x[1] != null ? x[1] + "%" : "n/a") + "</b><span>" + esc(x[0]) + "</span></div>"; }).join("") + '</div><p class="an-note">From the TrooCRO category benchmark library. Use them as a yardstick for your own analytics.</p></div>';
     return '<section class="rp-sec" id="rp-worth">' + h + "</section>";
   }
-  function rpNext(R, C, host) {
+  function rpNext(R, C, host, services) {
     var h = '<div class="an-cta-grid"><div class="an-card pad"><span class="an-label">Done the usual way</span><h3 class="an-h3" style="margin-top:12px">Each fix needs four people and a lot of handoffs.</h3><div class="an-roles">' +
       [["01", "A CRO analyst to find and size it"], ["02", "A designer to make it on brand"], ["03", "A developer to build it on your store"], ["04", "QA to check it on every device"]].map(function (x) { return '<div class="an-role"><span class="n">' + x[0] + "</span><span>" + esc(x[1]) + '</span><span class="h">handoff</span></div>'; }).join("") +
       '</div><p class="an-roles-foot">Four briefs and four calendars. Every handoff is a place a fix can stall.</p></div><div class="an-fixit"><span class="eyebrow" style="color:var(--text-2)">With TrooCRO</span><h2 class="h2">One team finds it, builds it and measures it.</h2><p>TrooCRO turns this report into shipped, tested changes on your store. You approve every change before it goes live.</p><div class="an-avgs"><div><b>6.4 days</b>CRO audit</div><div><b>3.7 days</b>UI/UX fix live</div><div><b>3.4 days</b>Experiment setup</div><div><b>12.9 days</b>Landing page</div></div><p class="an-note" style="margin-top:10px;color:var(--text-2);opacity:.7">Averages across Troopod’s delivered projects.</p><div class="btn-row"><a class="btn btn-light" href="contact.html?site=' + encodeURIComponent(host) + (R.slug ? "&amp;report=" + encodeURIComponent(R.slug) : "") + '">Fix it with TrooCRO</a><a class="btn btn-ghost" target="_blank" rel="noopener" href="https://wa.me/' + WA + "?text=" + encodeURIComponent("Hi TrooCRO, I ran the site analysis for " + host + (C.total != null ? " (score " + C.total + "/100)" : "") + " and want to talk about the fixes.") + '"><svg width="15" height="15"><use href="#i-wa"/></svg>WhatsApp us</a></div></div></div>';
-    h += '<div class="an-card an-lead"><span class="an-label">Get the full fix plan</span><h3 class="an-h3" style="margin-top:10px">Want every fix sized and scheduled for ' + esc(host) + '?</h3><p class="an-sub">Leave your details and the TrooCRO team will have this report when they reach you.</p><form data-lead novalidate><label class="an-input"><span class="sr-only">Name</span><input name="name" type="text" autocomplete="name" placeholder="Your name" required></label><label class="an-input"><span class="sr-only">Work email</span><input name="email" type="email" autocomplete="email" placeholder="Work email" required></label><input class="hp" name="hp" tabindex="-1" autocomplete="off" aria-hidden="true"><button class="btn btn-primary" type="submit">Send it to the team</button></form><div class="an-err" data-lead-err role="alert"></div></div>';
-    return '<section class="rp-sec" id="rp-next">' + secHead("Your next step", "Turn this report into revenue", "") + h + "</section>";
+    h += '<div class="an-card an-lead"><span class="an-label">Get the full fix plan</span><h3 class="an-h3" style="margin-top:10px">Want every fix sized and scheduled for ' + esc(host) + '?</h3><p class="an-sub">Leave your details and the TrooCRO team will have this report when they reach you.</p><form data-lead novalidate><label class="an-input"><span class="sr-only">Name</span><input name="name" type="text" autocomplete="name" placeholder="Your name" required></label><label class="an-input"><span class="sr-only">Work email</span><input name="email" type="email" autocomplete="email" placeholder="Work email" required></label><input class="hp" name="hp" tabindex="-1" autocomplete="off" aria-hidden="true"><label class="an-consent"><input type="checkbox" name="consent"><span>Troopod can contact me about this report. We save your name, email and this report, nothing else.</span></label><button class="btn btn-primary" type="submit">Send it to the team</button></form><div class="an-err" data-lead-err role="alert"></div></div>';
+    return '<section class="rp-sec" id="rp-next">' + secHead("Your next step", "Turn this report into revenue", "") + (services || "") + h + "</section>";
   }
 
   function wireReport(root, R, out) {
@@ -2314,6 +2407,7 @@
       if (!base) { toast("Share links work once the site is hosted."); return; }
       copyText(base + "?r=" + R.slug).then(function () { toast("Link copied"); }, function () { toast("Couldn't copy. The link is " + base + "?r=" + R.slug); });
     });
+    if (win.TrooGrowth && R.growth) win.TrooGrowth.wire(root, R.growth);
     var pr = $("[data-print]", root); if (pr) pr.addEventListener("click", function () { $$("details", root).forEach(function (d) { d.open = true; }); win.print(); });
     var nb = $("[data-new]", root); if (nb) nb.addEventListener("click", function () { setQuery(""); urlIn.value = ""; show("start"); urlIn.focus(); });
     /* tabs */
@@ -2360,8 +2454,9 @@
       if (!name) { err.textContent = "Add your name."; return; }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { err.textContent = "Enter a valid email address."; return; }
       if (S.mode === "sample" || S.offline) { err.textContent = "This is a sample report, so nothing was sent. Book a demo from the contact page instead."; return; }
+      if (lf.elements["consent"] && !lf.elements["consent"].checked) { err.textContent = "Tick the box so we can contact you about this report."; return; }
       err.textContent = ""; btn.disabled = true; btn.textContent = "Sending…";
-      api("/lead", { source: "report", name: name, email: email, website: R.url, scanSlug: R.slug || "", hp: lf.elements["hp"].value, interests: ["Site analysis report"] }, { timeout: 20000 }).then(function () {
+      api("/lead", { source: "report", name: name, email: email, website: R.url, scanSlug: R.slug || "", hp: lf.elements["hp"].value, interests: ["Site analysis report"].concat(lf.elements["consent"] && lf.elements["consent"].checked ? ["Consent: contact me about this report"] : []), consent: !!(lf.elements["consent"] && lf.elements["consent"].checked) }, { timeout: 20000 }).then(function () {
         lf.outerHTML = '<p class="ok">Thanks, ' + esc(name.split(" ")[0]) + ". Your details are saved with this report, and someone from the TrooCRO team may follow up.</p>";
       }).catch(function (x) { btn.disabled = false; btn.textContent = "Send it to the team"; err.textContent = x.message || "Couldn't send that. Try again."; });
     });
@@ -2377,6 +2472,7 @@
     lines.push("", "## Findings, by priority");
     out.F.forEach(function (f) { lines.push("- " + f.prio.l + ": " + (tidy((f.sig || {}).name) || f.key) + ". " + f.evidence + ((f.sig || {}).barriers && f.sig.barriers.length ? " Barriers: " + f.sig.barriers.join(", ") + "." : "")); });
     if (out.T.length) { lines.push("", "## First tests"); out.T.forEach(function (t) { lines.push(t.n + ". " + t.title + ". Where: " + t.where + ". " + t.measure); }); }
+    if (win.TrooGrowth && R.growth) lines.push(win.TrooGrowth.markdown(R.growth));
     lines.push("", "## Next step", "Fix it with TrooCRO: contact.html · WhatsApp +91 98104 83552");
     return lines.join("\n");
   }

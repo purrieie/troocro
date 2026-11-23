@@ -27,12 +27,36 @@ Live scans work from your computer too. Share links need the site to be hosted.
 ## How the analyzer works
 
 1. **Start.** The URL box (homepage or `analyze.html?url=yourstore.com`) calls `POST /scan` straight away.
-2. **Quick questions** (category, order value, goal, monthly visitors, up to two competitors) are asked while the first read runs. If the answers change the category or order band, the page is scanned again with those answers.
+2. **Quick questions** (category, order value, goal, monthly visitors, traffic source, up to two competitors and an optional ad headline) are asked while the first read runs. If the answers change the category or order band, the page is scanned again with those answers.
 3. **Live scan** in four phases: Read, Diagnose, Measure, Plan. Conversion checks land in the feed one by one, each tagged to its buyer barriers. Speed runs through Google PageSpeed when it is available, otherwise it is estimated from the page's code. Competitor homepages are scanned in parallel.
 4. **Report**: website score (conversion 40%, speed 20%, search and AI 20%, accessibility 20%; areas we can't measure are left out, never counted as zero), radar of area scores, findings by priority with barrier, root cause and the playbook fix, the first three tests with a dated plan (45 and 90-day checks), speed, search and AI, AI-agent view, accessibility, growth stack, competitor comparison, category benchmark, a lift calculator and the "Fix it with TrooCRO" CTA. The report is saved with `POST /save` and opens again at `analyze.html?r=REPORT_ID`.
 5. **Sample mode**: where live scans can't run (for example a sandboxed preview), the page offers a sample report from a real scan of Shopify's public Dawn demo store (`assets/js/sample-report.js`).
 
-All scanned text is escaped before it is shown. No paid AI calls are made: the analysis is rule-based on the TrooCRO library.
+All scanned text is escaped before it is shown. The analysis is rule-based on the TrooCRO library; the only AI call is one small Groq request per page for product-specific questions (see TrooGrowth below).
+
+## TrooGrowth (v11)
+
+The report is now a growth plan, not a list of generic findings. Same scan, four extra reads, one new report.
+
+**Extra reads** (Edge Function `troogrowth`, `supabase/functions/troogrowth`, cached 24 hours in `tg_cache`):
+
+| Route | What it does |
+| --- | --- |
+| `GET /crawl?url=` | Reads robots.txt and the sitemap, samples up to 22 pages (home, products, collections, pages, blogs) and skips anything robots.txt disallows. Per page: status, title, description, canonical, noindex, H1s, schema types, rating and FAQ schema, images without alt. |
+| `POST /trust {url}` | Fetches the returns and shipping policies, pulls facts (return window, damaged-only returns, free-shipping threshold, COD fee) and compares them with what the page promises. Also: countdown or "people viewing" scripts that use random numbers, sale labels with no higher original price, schema price vs product price, claims like "clinically proven" with no source nearby, and installed apps (reviews, loyalty, subscriptions, upsell, messaging, checkout). Quotes are copied from the pages, never written. |
+| `POST /insight {...}` | The only AI call: one small Groq request per page (cached 24h, 30 a day per visitor, 1,500 a day in total). It writes 4 to 6 buyer questions for this exact product, the exact page quote that answers each one (checked by script, dropped if it isn't on the page), real contradictions between two quotes (both checked), and one line on the biggest reason a shopper might not buy. If it fails, the report runs without it. |
+| `GET /peers?cat=&market=&exclude=` | Two category leaders for India or the US: homepage scan plus Google PageSpeed (mobile and desktop), refreshed once a day by `GET /peer-refresh?host=`. |
+
+The Groq key and the server PageSpeed key are placeholders in this repo (`__GROQ_KEY__`, `__PSI_KEY__`); the deployed function has them. The browser PageSpeed key is in `assets/js/config.js` (restrict it to purrieie.github.io in Google Cloud).
+
+**PageSpeed:** 3 runs on mobile and 3 on desktop in parallel from the browser, averaged.
+
+**Engine** (`assets/js/growth.js`, pure script):
+- Category, sub-category (86 from the TrooCRO library), market and season. The category gets a second opinion from the product's own words when the visitor didn't pick it.
+- **Buyer questions**: the category tab of the Troopod Category Barrier Library (`assets/js/troogrowth-lib.js`, built by `calibration/troogrowth/build_lib.py`), each graded Answered, Partly, Not answered or Check from the page text, the page checks mapped to that barrier, and the trust facts. Must, Should and Basics come from the library's priority for that category. Sub-categories drop questions that don't apply (no "will it fit my room" for a detergent).
+- **Six levers**: Discover (crawl + Google SEO score), Land (PageSpeed, accessibility, ad-to-page match), Convert (buyer questions + the benchmarked layout score), Trust, Order value, Retain. Each has a score, issues with evidence and fixes, and what's already in place.
+- **Money**: visitors x conversion x order value, from the visitor's answers, the page and the TrooCRO benchmark. Each 10% lift is worth the same, so levers are ranked by room to grow, the visitor's goal, traffic source and season, with lower weight on Order value and Retain (less of them is visible from outside).
+- **Report**: snapshot, the biggest problem in one line, three things to do this week, buyer questions, levers, you vs two category leaders, things to confirm with the team, and the Troopod services that fit the top levers. Every line is tagged Seen, Estimate or Confirm.
 
 ## Backend (Supabase, free plan)
 

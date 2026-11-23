@@ -735,6 +735,16 @@
     S.viewP = fetchView(S.url);
     S.viewReady = new Promise(function (res) { S._viewRes = res; });
     S.croP = S.viewP.then(function (v) { return v && v.html ? measureCro(v.html) : null; });
+    /* a second page of the same site: the homepage for a product page, one product page for anything else */
+    S.sideP = Promise.all([S.viewP, S.croP]).then(function (x) {
+      var v = x[0], m0 = x[1];
+      if (!v || !v.html || !m0 || !m0.f || isLeadPage(m0.f, null)) return null;
+      var base = v.url || S.url, link, type;
+      if (/\/products?\/|\/p\/|\/dp\//i.test(S.url)) { type = "HOME"; try { link = new URL("/", base).href; } catch (e) { link = null; } }
+      else { type = "PDP"; link = productLinkOf(v.html, base); }
+      if (!link) return null;
+      return fetchView(link).then(function (pv) { return pv && pv.html ? measureCro(pv.html) : null; }).then(function (m) { return m && m.f ? { f: m.f, url: link, type: type } : null; });
+    }).catch(function () { return null; });
     buildStages();
     warmStart();
     S.viewP.then(function (v) { if (v && v.html && S.running) mountReal(v); else viewDone(false); });
@@ -810,8 +820,17 @@
     stage("business", "done", bizLine);
     addFeed("act", "Read the business", bizLine, "");
 
-    /* 4. Conversion agent runs every check on the page */
+    /* 4. Conversion agent runs every check on the page, including what we measured on the rendered page */
     curAgent = "conv";
+    addStackChecks(r); lib = r.library;
+    var croEarly = await Promise.race([S.croP, sleep(7000).then(function () { return null; })]);
+    if (croEarly && croEarly.f) {
+      r.page = r.page || {};
+      if (isLeadPage(croEarly.f, r.page)) { r.page.lead = true; addFeed("info", "This is a sign-up site, not a store", "Judging it on sign-ups, trust and clarity instead of add-to-cart", "", "conv"); }
+      var nRc = mergeRendered(r, croEarly.f);
+      lib = r.library;
+      if (nRc) addFeed("act", "Measured the page on a phone", plural(nRc, "extra check") + " from the rendered page, mapped to buyer barriers", "", "conv");
+    }
     var checks = (r.checks || []).filter(function (c) { return !/^SIG-(MOB|A11Y)/.test(c.signal); });
     stage("signals", "run", "0 of " + checks.length + " checks");
     addFeed("act", "Running " + plural(checks.length, "conversion check"), "Each one comes from the TrooCRO signal library", "");
@@ -930,8 +949,15 @@
     curAgent = "plan";
     stage("plan", "run", "Ranking fixes by impact and effort");
     S.report = buildReport(r, psi, comps);
-    var cro = await Promise.race([S.croP, sleep(9000).then(function () { return null; })]);
-    if (cro) { S.report.cro = { score: cro.score, raw: cro.raw, up: cro.up, down: cro.down, f: cro.f, v: 3, n: cro.n }; addFeed("act", "Benchmarked the page", "Shopper experience " + cro.score + "/100 against " + cro.n + " product pages", "", "plan"); }
+    var croM = await Promise.race([S.croP, sleep(16000).then(function () { return null; })]);
+    var pType = (r.page || {}).pageType, lead = !!(r.page && r.page.lead) || (croM && croM.f && isLeadPage(croM.f, r.page)), sideM = null;
+    if (croM && croM.f && !lead) {
+      sideM = await Promise.race([S.sideP, sleep(12000).then(function () { return null; })]);
+      if (sideM) addFeed("act", pType === "PDP" ? "Checked your homepage too" : "Checked one of your product pages too", "Two pages of the same site rank stores far more reliably than one", "", "plan");
+    }
+    var cro = croM && croM.f ? croScore(croM.f, pType, sideM, lead) : null;
+    if (cro && cro.kind === "blend" && sideM && sideM.f) addSideFindings(S.report, sideM, cro.side.type);
+    if (cro) { S.report.cro = { score: cro.score, up: cro.up, down: cro.down, f: cro.f, v: 4, n: cro.n, kind: cro.kind, labels: cro.labels, page: cro.page, side: cro.side }; addFeed("act", "Benchmarked the page", (lead ? "Visitor experience " : "Shopper experience ") + cro.score + "/100 against " + cro.n + " " + (lead ? "fintech, healthtech and service sites" : "sites") + " we measured the same way", "", "plan"); }
     else addFeed("info", "Limited score", "We couldn't measure the page on a phone, so the score uses its code only", "", "plan");
     var C = compute(S.report);
     var T = testsOf(S.report, findingsOf(S.report));
@@ -993,13 +1019,12 @@
 
   /* ---------------- scoring and planning ---------------- */
 
-  /* ---------------- shopper-experience score (v3): benchmarked, not hand-weighted ----------------
-     We render the page on a 390px phone (scripts removed), measure what a shopper actually sees, and score it
-     against 60 product pages we measured the same way (strong D2C brands, mid-size stores, small unknown stores).
-     Weights were learned from those pages with sign constraints (a feature can only help if CRO practice says it helps),
-     then the output is calibrated so the typical poor page lands near 30, average near 55 and strong near 80. */
-  /* TrooCRO page features: measured on the page as a shopper sees it on a phone (390px wide, first screen 844px).
-     Works on any document: the calibration harness and the live analyzer run this same function. */
+  /* ---------------- shopper-experience score (v4): benchmarked on 570+ sites ----------------
+     We render the page on a 390px phone (scripts removed, exactly as the live view), measure what a visitor sees, and score it
+     against pages we measured the same way: Indian and US D2C brands, large retailers, small unknown stores, fintech and
+     healthtech sites. Weights are learned with sign constraints (a signal can only help if CRO practice says it helps),
+     and each store score combines the scanned page with a second page from the same site (product page + homepage),
+     because in cross-validation that ranked strong vs weak sites correctly far more often than either page alone. */
   function croFeatures(d, w) {
     var VW = 390, VH = 844;
     var sy = w.scrollY || 0;
@@ -1031,17 +1056,21 @@
 
     /* main button */
     var ATC = /^(add to (cart|bag|basket)|buy (it )?now|add to order|order now|shop now|add$|buy$|pre-?order|add \+)/i;
-    var cta = null;
+    var cta = null, ctaHidden = null;
+    /* also catch buy buttons that say more ("Add to Bag - $28", "Select size to add to cart", "Buy for myself") */
+    var ATC2 = /\b(add to (cart|bag|basket)|buy (it )?now|buy for (myself|me|yourself)|select (a )?size to add|choose options|pre-?order now)\b/i;
     all("button, input[type=submit], a, [role=button]").some(function (el) {
       var t = tx(el) || el.value || "";
-      if (t.length > 36 || !ATC.test(t)) return false;
-      if (!vis(el)) return false;
+      if (t.length > 48 || !(ATC.test(t) || ATC2.test(t))) return false;
+      if (!vis(el)) { if (!ctaHidden) ctaHidden = el; return false; }
       var r = R(el); if (r.w < 60 || r.h < 24) return false;
       cta = el; return true;
     });
     var ctaR = cta ? R(cta) : null;
-    F.cta_found = cta ? 1 : 0;
-    F.cta_atf = ctaR ? (ctaR.y < VH ? 1 : ctaR.y < VH * 1.6 ? 0.5 : 0) : 0;
+    /* a buy button that exists in the page but is shown by JavaScript (our render runs no scripts): count it, but as unknown position */
+    F.cta_hidden = !cta && ctaHidden ? 1 : 0;
+    F.cta_found = cta || ctaHidden ? 1 : 0;
+    F.cta_atf = ctaR ? (ctaR.y < VH ? 1 : ctaR.y < VH * 1.6 ? 0.5 : 0) : (F.cta_hidden ? 0.5 : 0);
     F.cta_height = ctaR ? Math.min(64, ctaR.h) : 0;
     F.cta_width = ctaR ? Math.min(1, ctaR.w / (VW - 24)) : 0;
     if (cta) {
@@ -1050,13 +1079,16 @@
       F.cta_contrast = Math.min(8, contrast(own, page)); // button vs page
       F.cta_text_contrast = Math.min(15, contrast(own, fl == null ? 0 : fl));
       F.cta_filled = bl != null && Math.abs(bl - page) > 0.15 ? 1 : 0;
-    } else { F.cta_contrast = 1; F.cta_text_contrast = 1; F.cta_filled = 0; }
+    } else if (F.cta_hidden) { F.cta_contrast = 2.5; F.cta_text_contrast = 4; F.cta_filled = 0.5; }
+    else { F.cta_contrast = 1; F.cta_text_contrast = 1; F.cta_filled = 0; }
 
     /* price and offer */
     var priceEl = null;
     all("[class*=price], [id*=price], [data-price]").some(function (el) { var t = tx(el); if (!/\d/.test(t) || t.length > 80 || !vis(el)) return false; var r = R(el); if (r.y > 2200) return false; priceEl = el; return true; });
     var pR = priceEl ? R(priceEl) : null;
-    F.price_atf = pR ? (pR.y < VH ? 1 : pR.y < VH * 1.6 ? 0.5 : 0) : 0;
+    var priceHidden = !priceEl && all("[class*=price], [id*=price], [data-price]").some(function (el) { var t = (el.textContent || "").trim(); return /\d/.test(t) && t.length < 80 && /(₹|rs\.?|\$|£|€|inr|usd)/i.test(t); });
+    F.price_hidden = priceHidden ? 1 : 0;
+    F.price_atf = pR ? (pR.y < VH ? 1 : pR.y < VH * 1.6 ? 0.5 : 0) : (priceHidden ? 0.5 : 0);
     var priceZone = priceEl ? tx(priceEl.parentElement && priceEl.parentElement.parentElement || priceEl).toLowerCase().slice(0, 300) : "";
     F.offer = /(\d{1,2})\s*%\s*off|save\s*(₹|rs|\$|£|\d)|mrp|you save|was\s*(₹|rs|\$|£)|<s>/.test(priceZone) || (priceEl && priceEl.parentElement && priceEl.parentElement.querySelector("s, del, [class*=compare], [class*=regular], [class*=strike]")) ? 1 : 0;
     F.emi = /\bemi\b|pay later|pay in \d|klarna|afterpay|snapmint|simpl|lazypay|interest[- ]free|no[- ]cost/.test(low) ? 1 : 0;
@@ -1145,39 +1177,306 @@
     F.announce = all("[class*=announcement], [class*=marquee], [class*=ticker], [class*=topbar], [class*=top-bar]").filter(vis).length ? 1 : 0;
     F.broken_imgs = (function () { var im = all("img").filter(function (i) { var r = i.getBoundingClientRect(); return r.top + sy < 1500 && r.width > 60; }); if (!im.length) return 0; return im.filter(function (i) { return i.complete && i.naturalWidth === 0; }).length / im.length; })();
     F.doc_height_screens = Math.min(20, docH / VH);
+
+    /* ---- extra page content signals (used for findings on every page type) ---- */
+    F.how_to_use = /how to (use|apply|wear|style|care|assemble|install)|directions( for use)?|usage|dosage|care instructions|wash care|application/.test(low) ? 1 : 0;
+    F.composition = /ingredients?|key actives|formulation|composition|material|fabric|made (of|from|with)|specifications?|specs|tech specs|dimensions|nutrition(al)? (facts|information)|what'?s inside/.test(low) ? 1 : 0;
+    F.size_guide = /size (chart|guide)|find your (size|fit)|measurements?|fit guide/.test(low) ? 1 : 0;
+    F.dimensions = /dimensions?|\d+\s*(cm|mm|inch|in|ft)\s*(x|×)\s*\d+/.test(low) ? 1 : 0;
+    F.free_ship_msg = /free (shipping|delivery)/.test(low) ? 1 : 0;
+    F.payment_opts = /\bupi\b|gpay|google pay|phonepe|paytm|visa|mastercard|rupay|cash on delivery|\bcod\b|net ?banking|apple pay|paypal|klarna/.test(low) ? 1 : 0;
+    F.returns_msg = /\d+[- ]?days? (easy )?(return|exchange|refund)|easy (returns?|exchange)|free returns?|no questions asked|money[- ]back|return policy/.test(low) ? 1 : 0;
+    F.returns_near = /return|exchange|refund|money[- ]back/.test(zone) ? 1 : 0;
+    F.certs = /fssai|gmp|iso ?\d|certified|lab[- ]tested|clinically (tested|proven)|dermatologically|hallmark|\bbis\b|fda|ayush|nabl|cruelty[- ]free|vegan certified|peta/.test(low) ? 1 : 0;
+    F.photo_reviews = cards.some(function (el) { return el.querySelector && el.querySelector("img"); }) ? 1 : 0;
+    F.gift = /gift (wrap|box|card|message|packaging)|gifting|perfect gift/.test(low) ? 1 : 0;
+    F.promo_noise = Math.min(12, (full.match(/(\d{1,2})\s*%\s*off|use code|coupon|flat ₹|extra \d+%|buy \d+ get \d+/gi) || []).length);
+    F.guarantee = /guarantee|warranty|money[- ]back|risk[- ]free/.test(low) ? 1 : 0;
+    F.whatsapp = /wa\.me|whatsapp/.test((body.innerHTML || "").slice(0, 600000).toLowerCase()) ? 1 : 0;
+    F.search_box = all("input[type=search], form[action*=search] input, [role=search] input").length || all("a[href*='/search'], [aria-label*=earch]").length ? 1 : 0;
+
+    /* ---- listing signals: product cards (homepage and collection pages) ---- */
+    var seenCards = [], cardsInfo = [];
+    all("a[href*='/products/'], a[href*='/product/'], a[href*='/p/']").forEach(function (a) {
+      var card = a.closest ? (a.closest("li, article, [class*=card], [class*=product-item], [class*=grid__item], [class*=product-tile]") || a.parentElement) : a.parentElement;
+      if (!card || seenCards.indexOf(card) >= 0) return;
+      var r = card.getBoundingClientRect(); if (r.width < 90 || r.height < 120 || r.width > VW + 5) return;
+      if (!card.querySelector("img")) return;
+      seenCards.push(card);
+      var t = tx(card);
+      cardsInfo.push({ y: r.top + sy, price: /(₹|rs\.?|\$|£|€|inr)\s?[\d,]+/i.test(t), rating: /★|(\d\.\d)\s*(\/5|stars?)|\(\s*\d[\d,]*\s*\)|\d+\s*reviews?/i.test(t) || !!card.querySelector("[class*=star], [class*=rating], [class*=review]"),
+        add: !!Array.prototype.slice.call(card.querySelectorAll("button, [class*=add], input[type=submit]")).filter(function (b) { return /add|cart|bag|buy|\+/i.test(tx(b) || b.value || b.getAttribute("aria-label") || ""); }).length,
+        swatch: !!card.querySelector("[class*=swatch], [class*=color], [class*=colour]"), badge: /(\d{1,2})\s*%\s*off|sale|save|bestseller|best seller|new/i.test(t) });
+    });
+    var nC = cardsInfo.length || 1;
+    F.cards = Math.min(60, cardsInfo.length);
+    F.cards_top = Math.min(20, cardsInfo.filter(function (c) { return c.y < VH * 3; }).length);
+    F.card_price = cardsInfo.length ? cardsInfo.filter(function (c) { return c.price; }).length / nC : 0;
+    F.card_rating = cardsInfo.length ? cardsInfo.filter(function (c) { return c.rating; }).length / nC : 0;
+    F.card_add = cardsInfo.length ? cardsInfo.filter(function (c) { return c.add; }).length / nC : 0;
+    F.card_swatch = cardsInfo.length ? cardsInfo.filter(function (c) { return c.swatch; }).length / nC : 0;
+    F.card_badge = cardsInfo.length ? cardsInfo.filter(function (c) { return c.badge; }).length / nC : 0;
+    var firstCard = cardsInfo.length ? Math.min.apply(null, cardsInfo.map(function (c) { return c.y; })) : 99999;
+    F.first_product_screens = Math.min(10, firstCard / VH);
+    var ctrl = all("button, a, summary, select, label, span").filter(function (el) { var t = tx(el).toLowerCase(); return t.length < 30 && vis(el); });
+    F.filter_ui = ctrl.some(function (el) { return /^(filter|filters|refine|filter (by|&|and) sort|show filters)/.test(tx(el).toLowerCase()); }) || all("[class*=filter], facet-filters-form, [id*=filter]").filter(vis).length ? 1 : 0;
+    F.sort_ui = ctrl.some(function (el) { return /^sort/.test(tx(el).toLowerCase()); }) || all("select[name*=sort], [class*=sort]").length ? 1 : 0;
+    F.product_count = /\b\d+\s*(products|items|results)\b/i.test(full) ? 1 : 0;
+    var catLinks = {}; all("a[href*='/collections/'], a[href*='/category'], a[href*='/c/']").forEach(function (a) { var r = a.getBoundingClientRect(); if (r.top + sy < VH * 3 && r.width > 30 && vis(a) && !(a.closest && a.closest("header nav [class*=drawer], footer"))) catLinks[(a.getAttribute("href") || "").split("?")[0]] = 1; });
+    F.category_entries = Math.min(20, Object.keys(catLinks).length);
+    var heroText = ""; all("h1, h2, p, a, button").forEach(function (el) { var r = el.getBoundingClientRect(); if (r.top + sy < VH && r.width > 40 && vis(el)) heroText += " " + tx(el); });
+    F.hero_words = Math.min(80, heroText.trim() ? heroText.trim().split(/\s+/).length : 0);
+    var heroBtn = all("a, button").some(function (el) { var r = el.getBoundingClientRect(); var t = tx(el); if (r.top + sy > VH || r.width < 70 || r.height < 28 || !t || t.length > 30 || !vis(el)) return false; var s2 = cs(el); return lum(s2.backgroundColor) != null || /btn|button|cta/i.test(el.className || ""); });
+    F.hero_cta = heroBtn ? 1 : 0;
+    F.carousel = all("[class*=slider], [class*=carousel], [class*=swiper], [class*=slideshow], slider-component, slideshow-component").filter(function (el) { var r = el.getBoundingClientRect(); return r.top + sy < VH && r.height > 150; }).length ? 1 : 0;
+    F.bestsellers = /best ?sellers?|top (picks|rated|selling)|most loved|customer favou?rites|trending/.test(low) ? 1 : 0;
+    F.testimonials = /testimonials?|what (our )?customers (say|are saying)|reviews? from|loved by|happy customers|customer stories/.test(low) ? 1 : 0;
+    F.collection_desc = all("[class*=collection-description], [class*=collection__description], [class*=category-description], .rte").filter(function (el) { var r = el.getBoundingClientRect(); return r.top + sy < VH * 1.5 && tx(el).length > 40; }).length ? 1 : 0;
+    F.newsletter_incentive = (function () { var em = all("input[type=email]"); if (!em.length) return 0; var z = tx(em[0].closest ? (em[0].closest("form, section, div") || em[0]) : em[0]).toLowerCase(); return /%|off|discount|early access|free|exclusive|coupon|₹\s?\d/.test(z) ? 1 : 0.5; })();
+
+    /* ---- lead-gen / service pages (fintech, healthtech, apps, services) ---- */
+    (function () {
+      var LEAD = /^(get started|sign ?up|start (free|now|investing|trading|your)|open (an? )?(free )?(account|demat)|apply( now)?|check (eligibility|offer)|get (the app|a quote|quote|your|free|instant|loan|card|covered)|book (a |an |your )?(demo|consult|consultation|appointment|test|call|now|free)|talk to|contact (sales|us)|request (a )?(demo|call|callback)|download( the)? app|join (now|free|waitlist)|try (it )?(for )?free|start (a )?free trial|consult now|create account|log ?in to start|invest now|buy (a )?policy|compare)/i;
+      var cands = all("a, button, [role=button], input[type=submit]").filter(function (el) { var t = tx(el) || el.value || ""; return t.length <= 40 && LEAD.test(t) && vis(el); });
+      var atf = cands.filter(function (el) { var r = R(el); return r.y < VH && r.w >= 70 && r.h >= 28; });
+      F.lead_cta_found = cands.length ? 1 : 0;
+      F.lead_cta_atf = atf.length ? 1 : 0;
+      F.lead_cta_atf_n = Math.min(atf.length, 6);
+      var lc = atf[0];
+      if (lc) { var st = cs(lc), bgL = lum(st && st.backgroundColor), pb = bgOf(lc.parentElement || lc); F.lead_cta_filled = bgL != null ? 1 : 0; F.lead_cta_contrast = bgL != null ? contrast(bgL, pb) : 1; var rr = R(lc); F.lead_cta_width = rr.w / VW; F.lead_cta_height = Math.min(64, rr.h); } else { F.lead_cta_filled = 0; F.lead_cta_contrast = 1; F.lead_cta_width = 0; F.lead_cta_height = 0; }
+      var html = d.documentElement.innerHTML || "";
+      F.app_badges = /play\.google\.com\/store|apps\.apple\.com|itunes\.apple\.com/i.test(html) ? 1 : 0;
+      F.app_rating = /\b[34]\.\d\s*(★|stars?|rating|on (google play|play store|app store))|rated\s*[34]\.\d/i.test(low) ? 1 : 0;
+      F.press = /(as (seen|featured) (in|on)|featured in|in the (news|press)|press coverage|media coverage)/i.test(low) ? 1 : 0;
+      F.regulated = /\b(rbi|sebi|irdai|amfi|nbfc|fdic|finra|sipc|hipaa|iso ?27001|soc ?2|pci[- ]dss|nabl|nabh|cap accredited|fda[- ](approved|registered|cleared)|licensed|regulated by|registered with)\b/i.test(low) ? 1 : 0;
+      F.security = /(bank[- ]grade|256[- ]bit|encrypt|secure(d)? (by|with)|data (is )?(safe|secure|protected)|privacy[- ]first|we never share)/i.test(low) ? 1 : 0;
+      var stats = low.match(/\b\d[\d,.]*\s?(\+|k\+|m\+|lakh\+?|crore\+?|cr\+?|million\+?|billion\+?|mn\+?)\s*(happy |active |trusted |satisfied )?(users|customers|investors|patients|members|downloads|businesses|merchants|families|people|consultations|doctors|clients|traders|policies)/g) || [];
+      F.stat_claims = Math.min(stats.length, 5);
+      F.logos_strip = (function () { var n = 0; all("img").forEach(function (im) { var a = ((im.getAttribute("alt") || "") + " " + (im.getAttribute("src") || "")).toLowerCase(); if (/logo|partner|client|investor|backed|press/.test(a)) n++; }); return Math.min(n, 12); })();
+      F.pricing_link = all("a").some(function (a) { return /pricing|plans|fees|charges|brokerage|interest rates?|premium/i.test(tx(a)) && tx(a).length < 30; }) ? 1 : 0;
+      var forms = all("form").filter(function (f0) { return vis(f0); });
+      F.form_atf = forms.some(function (f0) { return R(f0).y < VH * 1.2 && f0.querySelectorAll("input:not([type=hidden]):not([type=submit]), select").length >= 1; }) ? 1 : 0;
+      F.form_fields = forms.length ? Math.min(12, Math.max.apply(null, forms.map(function (f0) { return f0.querySelectorAll("input:not([type=hidden]):not([type=submit]):not([type=checkbox]), select, textarea").length; }))) : 0;
+      F.how_it_works = /(how it works|how does it work|in \d simple steps|step 1|3 easy steps|get started in)/i.test(low) ? 1 : 0;
+      F.calculator = /(calculator|emi calc|check (your )?(eligibility|premium|returns)|estimate (your|savings))/i.test(low) ? 1 : 0;
+      F.doctor_proof = /(\d+\+?\s*(years|yrs) (of )?experience|board[- ]certified|mbbs|md\b|specialists?|qualified doctors|expert doctors)/i.test(low) ? 1 : 0;
+      F.feature_sections = Math.min(all("section, [class*=section]").filter(function (x) { return vis(x) && R(x).h > 200; }).length, 20);
+      var heroEl = all("h1, h2").filter(function (h) { return vis(h) && R(h).y < VH; })[0];
+      F.hero_head_words = heroEl ? Math.min(40, tx(heroEl).split(" ").length) : 0;
+      F.hero_head_size = heroEl ? Math.min(64, parseFloat((cs(heroEl) || {}).fontSize) || 0) : 0;
+    })();
+
+    /* ---- how complete our render is (scripts off): low when key parts only appear with JavaScript ---- */
+    F.render_conf = Math.max(0, Math.min(1, 1 - 0.3 * (F.cta_hidden || 0) - 0.2 * (F.price_hidden || 0) - ((F.words || 0) < 150 ? 0.3 : 0) - ((F.headings || 0) === 0 ? 0.15 : 0) - ((F.gallery || 0) <= 1 && !(F.cards >= 3) ? 0.15 : 0)));
+
+    /* ---- signals that mirror TrooUIUX Scanner rules (used by findings, not by the score) ---- */
+    F.cards_atf = Math.min(20, cardsInfo.filter(function (c) { return c.y < VH - 80; }).length);
+    F.delivery_any = /(deliver(y|ed|s)?|dispatch(ed|es)?|ships?|arrives?|get it)\s*(by|in|within|on|tomorrow|today)|pin ?code|check delivery|estimated delivery|delivery date|same[- ]day delivery|next[- ]day delivery/.test(low) ? 1 : 0;
+    F.cod_any = /cash on delivery|\bcod\b/.test(low) ? 1 : 0;
+    F.lorem = /lorem ipsum|dolor sit amet|consectetur adipiscing|your (text|title|content) here|placeholder text/.test(low) ? 1 : 0;
+    F.india = /₹|\brs\.?\s?\d|\binr\b/.test(low) ? 1 : 0;
+    F.rating_any = (F.review_count_log > 0 || F.review_cards > 0 || F.rating_top || /\b[1-5](\.\d)?\s*(\/\s*5|out of 5|stars?)\b|★/.test(low)) ? 1 : 0;
+    F.solid_atf = (function () {
+      var seen = {}, n = 0;
+      all("a, button, [role=button], input[type=submit]").forEach(function (el) {
+        if (n > 12 || !vis(el)) return;
+        var r = el.getBoundingClientRect(), y = r.top + sy; if (y > VH || r.width < 60 || r.height < 28) return;
+        var st = cs(el), bl = st && lum(st.backgroundColor); if (bl == null) return;
+        if (Math.abs(bl - bgOf(el.parentElement || el)) < 0.15) return;
+        var t = (tx(el) || el.value || "").toLowerCase().slice(0, 30); if (!t || seen[t]) return;
+        seen[t] = 1; n++;
+      });
+      return n;
+    })();
+
+    /* paragraphs over 110 words (Scanner "para" rule); counted on leaf text blocks */
+    F.long_paras = Math.min(10, all("p, li, div").filter(function (el) {
+      if (!vis(el)) return false;
+      for (var c = el.firstElementChild; c; c = c.nextElementSibling) { var d0 = (cs(c) || {}).display || ""; if (/block|flex|grid|table|list-item/.test(d0)) return false; }
+      return tx(el).split(" ").length > 110;
+    }).length);
+    /* broader read of a sign-up site's main action (rule use only; the score keeps the original measure) */
+    (function () {
+      var LEAD2 = /^(get started|get going|sign ?up|start\b|open (an? )?(free )?(account|demat)|apply|check (eligibility|offer|your|now|rates?|score|price)|get (the app|app|a quote|quote|your|free|instant|loan|card|covered|started)|book\b|talk to|chat with|contact (sales|us)|request|download|install|join\b|try\b|consult|create (an? )?account|invest|buy (a )?(policy|plan|insurance)|compare|explore (plans|products|now)|find (a |the )?(doctor|hospital|clinic|lab|test|plan)|search (doctors|hospitals|clinics)|schedule|claim|enrol|enroll|calculate|see (plans|pricing|how)|view plans|shop now|order now)/i;
+      var cand = all("a, button, [role=button], input[type=submit]").filter(function (el) { var t = tx(el) || el.value || ""; return t.length <= 44 && LEAD2.test(t); });
+      var shown = cand.filter(vis), atf = shown.filter(function (el) { var r = R(el); return r.y < VH && r.w >= 60 && r.h >= 24; });
+      F.lead_cta2_found = shown.length ? 1 : 0;
+      F.lead_cta2_hidden = !shown.length && cand.length ? 1 : 0;
+      F.lead_cta2_atf = atf.length ? 1 : 0;
+      var c0 = atf[0];
+      if (c0) {
+        var st = cs(c0) || {}, bgL = lum(st.backgroundColor), grad = /gradient|url\(/i.test(st.backgroundImage || ""), rr = R(c0);
+        /* the section behind the button: first ancestor with a different colour; a photo or gradient behind it can't be judged, so it isn't penalised */
+        var secL = 1, secImg = false;
+        for (var e0 = c0.parentElement; e0 && e0.nodeType === 1; e0 = e0.parentElement) {
+          var s0 = cs(e0); if (!s0) continue;
+          if (/url\(|gradient/i.test(s0.backgroundImage || "")) { secImg = true; break; }
+          var l0 = lum(s0.backgroundColor); if (l0 != null && (bgL == null || Math.abs(l0 - bgL) > 0.02)) { secL = l0; break; }
+        }
+        F.lead_cta2_filled = bgL != null || grad ? 1 : 0;
+        F.lead_cta2_contrast = secImg || grad ? 3 : bgL != null ? contrast(bgL, secL) : 1;
+        F.lead_cta2_height = Math.min(64, rr.h); F.lead_cta2_width = rr.w / VW;
+      } else { F.lead_cta2_filled = 0; F.lead_cta2_contrast = 1; F.lead_cta2_height = 0; F.lead_cta2_width = 0; }
+    })();
+    /* ---- design-quality signals (how polished the page looks, from the DOM) ---- */
+    (function () {
+      var H2 = VH * 2, sizes = {}, colors = {}, fams = {}, caps = 0, chars = 0, leaves = 0, sat = 0, boxes = 0, emoji = 0, imgArea = 0, lowres = 0, imgs = 0;
+      function rgb(c) { var m = String(c || "").match(/rgba?\(([^)]+)\)/); if (!m) return null; var p = m[1].split(",").map(parseFloat); if (p.length > 3 && p[3] < 0.2) return null; return p; }
+      function satOf(p) { var r = p[0] / 255, g = p[1] / 255, b = p[2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2; if (mx === mn) return 0; return (mx - mn) / (l > 0.5 ? 2 - mx - mn : mx + mn); }
+      var els = all("body *"), n = 0;
+      for (var i = 0; i < els.length && n < 4000; i++) {
+        var el = els[i]; n++;
+        var r0 = el.getBoundingClientRect(); if (r0.width < 4 || r0.height < 4) continue;
+        var y0 = r0.top + sy; if (y0 > H2) continue;
+        var st = cs(el); if (!st || st.display === "none" || st.visibility === "hidden") continue;
+        var own = ""; for (var c = el.firstChild; c; c = c.nextSibling) if (c.nodeType === 3) own += c.nodeValue;
+        own = own.replace(/\s+/g, " ").trim();
+        if (own.length > 1) {
+          leaves++; sizes[Math.round(parseFloat(st.fontSize))] = 1; colors[st.color] = 1; fams[(st.fontFamily || "").split(",")[0].trim().toLowerCase()] = 1;
+          chars += own.length; caps += (own.match(/[A-Z]/g) || []).length + (st.textTransform === "uppercase" ? (own.match(/[a-z]/g) || []).length : 0);
+          emoji += (own.match(/[\u{1F300}-\u{1FAFF}☀-➿]/gu) || []).length;
+        }
+        var bg = rgb(st.backgroundColor);
+        if (bg && r0.width > VW * 0.6 && r0.height > 18 && r0.height < 160 && satOf(bg) > 0.55 && (bg[0] + bg[1] + bg[2]) > 120) sat++;
+        if (parseFloat(st.borderTopWidth) >= 1 && st.borderTopStyle !== "none" && parseFloat(st.borderLeftWidth) >= 1 && r0.width > 60 && r0.height > 24) boxes++;
+        if (el.tagName === "IMG" && y0 < VH) {
+          var vis_h = Math.max(0, Math.min(VH, y0 + r0.height) - Math.max(0, y0)); imgArea += Math.min(VW, r0.width) * vis_h;
+          if (r0.width > 120) { imgs++; if (el.naturalWidth && el.naturalWidth < r0.width * 1.4) lowres++; }
+        }
+      }
+      F.d_font_sizes = Math.min(Object.keys(sizes).length, 20);
+      F.d_colors = Math.min(Object.keys(colors).length, 20);
+      F.d_fonts = Math.min(Object.keys(fams).length, 8);
+      F.d_caps = chars ? Math.min(1, caps / chars) : 0;
+      F.d_leaves = Math.min(leaves, 300);
+      F.d_sat_bands = Math.min(sat, 10);
+      F.d_boxes = Math.min(boxes, 60);
+      F.d_emoji = Math.min(emoji, 20);
+      F.d_img_cover = Math.min(1, imgArea / (VW * VH));
+      F.d_lowres = imgs ? lowres / imgs : 0;
+    })();
     return F;
   }
-  var CRO_MODEL = {"names": ["cta_atf", "cta_filled", "sticky_cta", "price_atf", "rating_top", "offer", "delivery_near", "trust_near", "benefits", "structure", "breadcrumb", "compare", "faq", "social", "reviews", "gallery", "video", "crosssell", "variants", "cta_contrast", "no_overflow", "short_title", "no_wall", "no_popup"], "mu": [0.55, 0.7167, 0.6167, 0.625, 0.6667, 0.6667, 0.4, 0.4292, 0.4167, 0.5489, 0.4833, 0.5167, 0.75, 0.1333, 0.2714, 0.9139, 0.5667, 0.4167, 0.45, 0.7231, 0.8833, 0.9394, 0.15, 0.7667], "sd": [0.4252, 0.4506, 0.4862, 0.4044, 0.4714, 0.4714, 0.4899, 0.3294, 0.4362, 0.3805, 0.4997, 0.4997, 0.433, 0.3399, 0.3997, 0.2075, 0.3223, 0.493, 0.489, 0.3399, 0.321, 0.1456, 0.2784, 0.423], "w": [0.0848, 0.0292, 0.0589, 0.0193, 0.0537, 0.0015, 0.0417, 0.0078, 0.0486, 0.0468, 0.0406, 0.0, 0.0187, 0.0207, 0.0194, 0.018, 0.0, 0.0235, 0.0053, 0.0, 0.0702, 0.0338, 0.0354, 0.0], "anchors": [-0.3261, -0.0307, 0.1512], "n": 60};
-  var CRO_LABEL = {
-    cta_atf: "Add to cart on the first screen", cta_filled: "Solid, high-contrast main button", sticky_cta: "Add to cart stays in reach while scrolling",
-    price_atf: "Price on the first screen", rating_top: "Star rating near the product name", offer: "Discount or MRP next to the price",
-    delivery_near: "Delivery date next to the button", trust_near: "Reassurance badges by the button", benefits: "Scannable benefit points",
-    structure: "Clear sections and headings", breadcrumb: "Breadcrumbs to find the way back", faq: "Answers to common questions",
-    social: "Brand-scale proof (customers, press)", reviews: "Review count shown", gallery: "A real product photo gallery",
-    crosssell: "Bundles or cross-sell", variants: "Easy variant buttons", no_overflow: "Page fits the phone screen",
-    short_title: "Short, scannable product name", no_wall: "No walls of text", compare: "Comparison table", video: "Product video",
-    cta_contrast: "Button stands out from the page", no_popup: "No popups covering the page"
-  };
-  function croVector(f) {
-    function cap(v, c) { return Math.min(v || 0, c) / c; }
-    return { cta_atf: f.cta_atf, cta_filled: f.cta_filled, sticky_cta: f.sticky_cta, price_atf: f.price_atf, rating_top: f.rating_top, offer: f.offer,
-      delivery_near: f.delivery_near, trust_near: cap(f.trust_near, 4), benefits: cap(f.benefit_bullets, 6), structure: cap(f.headings, 15),
-      breadcrumb: f.breadcrumb, compare: f.compare_table, faq: f.faq, social: f.social_scale, reviews: cap(f.review_count_log, 3), gallery: cap(f.gallery, 6),
-      video: f.video, crosssell: f.crosssell, variants: f.variants_ui, cta_contrast: cap(f.cta_contrast, 4), no_overflow: 1 - (f.overflow || 0),
-      short_title: 1 - Math.max(0, Math.min(1, ((f.title_len || 0) - 60) / 60)), no_wall: 1 - (f.text_wall || 0) / 2, no_popup: 1 - Math.min(f.fixed_layers || 0, 1) };
+  var MODELS = {"PDP": {"names": ["d_caps", "d_emoji", "d_img", "cta_atf", "cta_filled", "sticky_cta", "price_atf", "rating_top", "offer", "delivery_near", "trust_near", "benefits", "structure", "breadcrumb", "compare", "faq", "social", "reviews", "gallery", "video", "crosssell", "variants", "cta_contrast", "no_overflow", "short_title", "no_wall", "no_popup", "returns_near", "free_ship", "payment_opts", "how_to_use", "composition", "guarantee", "calm_promos"], "mu": [0.641, 0.8868, 0.8198, 0.5108, 0.6369, 0.4154, 0.6846, 0.44, 0.5415, 0.2369, 0.3515, 0.5046, 0.4265, 0.5415, 0.2923, 0.5662, 0.1138, 0.1088, 0.8021, 0.5154, 0.3015, 0.3323, 0.6681, 0.9046, 0.9624, 0.2523, 0.7785, 0.2923, 0.4615, 0.2031, 0.2769, 0.6862, 0.3169, 0.7496], "sd": [0.2315, 0.2681, 0.3116, 0.3871, 0.4596, 0.4928, 0.386, 0.4964, 0.4983, 0.4252, 0.3437, 0.4511, 0.3677, 0.4983, 0.4548, 0.4956, 0.3176, 0.2751, 0.3054, 0.3009, 0.4589, 0.4628, 0.3359, 0.2937, 0.1536, 0.3651, 0.4153, 0.4548, 0.4985, 0.4023, 0.4475, 0.4641, 0.4653, 0.3166], "w": [0.0239, 0.0508, 0.013, 0.0103, 0.002, 0.0, 0.0077, 0.034, 0.0, 0.0011, 0.0, 0.0095, 0.0165, 0.0214, 0.0, 0.0344, 0.0165, 0.0775, 0.01, 0.0204, 0.0054, 0.0251, 0.0387, 0.0128, 0.0576, 0.0545, 0.0271, 0.0162, 0.027, 0.0, 0.0181, 0.0099, 0.0313, 0.0049], "anchors": [-0.0798, -0.0087, 0.0646], "n": 325, "zc": 1.5, "blend": {"homeW": 0.30000000000000004, "anchors": [33.41, 52.83, 70.46], "n": 322, "conf": false}}, "HOME": {"names": ["d_caps", "d_emoji", "d_img", "hero_cta", "hero_clear", "categories", "products_early", "card_price", "card_rating", "proof", "trust", "bestsellers", "search", "no_carousel", "no_overflow", "no_popup", "calm_promos", "products_soon", "newsletter", "structure", "press", "stats", "logos", "sections", "hero_size", "no_wall"], "mu": [0.5331, 0.9003, 0.8458, 0.6781, 0.3588, 0.6398, 0.4617, 0.2422, 0.1415, 0.3799, 0.5161, 0.5989, 0.8786, 0.3826, 0.9393, 0.8074, 0.6471, 0.4198, 0.3351, 0.6888, 0.0844, 0.0422, 0.5123, 0.8517, 0.5527, 0.2454], "sd": [0.2822, 0.2609, 0.3139, 0.4672, 0.4797, 0.3972, 0.459, 0.3824, 0.3123, 0.4854, 0.2989, 0.4901, 0.3266, 0.486, 0.2388, 0.3944, 0.4054, 0.3966, 0.2513, 0.3531, 0.278, 0.1531, 0.3817, 0.2976, 0.3289, 0.3693], "w": [0.0411, 0.0518, 0.0221, 0.02, 0.0027, 0.0, 0.0, 0.0, 0.0215, 0.0, 0.0, 0.0312, 0.0, 0.0882, 0.0224, 0.0266, 0.0, 0.0111, 0.0241, 0.0, 0.0357, 0.0265, 0.0, 0.0, 0.0226, 0.0351], "anchors": [-0.0517, -0.0245, 0.0421], "n": 379, "zc": 1.5, "blend": {"pdpW": 0.5, "anchors": [34.03, 51.26, 70.94], "n": 322, "conf": false}}, "COLLECTION": {"names": ["d_caps", "d_emoji", "d_img", "products_early", "card_price", "card_rating", "card_add", "card_swatch", "card_badge", "filter", "sort", "count", "desc", "breadcrumb", "products_soon", "no_overflow", "no_popup", "calm_promos", "title", "structure"], "mu": [0.5385, 0.895, 0.76, 0.8923, 0.3771, 0.2317, 0.2222, 0.1962, 0.2816, 0.7857, 0.7395, 0.395, 0.2395, 0.4748, 0.7996, 0.9622, 0.7857, 0.6234, 0.6933, 0.479], "sd": [0.2581, 0.2661, 0.3013, 0.2269, 0.4421, 0.3879, 0.38, 0.3647, 0.3881, 0.4103, 0.4389, 0.4888, 0.4268, 0.4994, 0.1696, 0.1907, 0.4103, 0.4308, 0.4611, 0.4362], "w": [0.0218, 0.0452, 0.0608, 0.012, 0.0175, 0.0388, 0.0, 0.0329, 0.018, 0.0, 0.0, 0.0231, 0.0139, 0.0048, 0.006, 0.0351, 0.0458, 0.0, 0.0147, 0.0497], "anchors": [-0.0275, 0.0043, 0.0414], "n": 238, "zc": 1.5, "blend": {"pdpW": 0.7, "anchors": [32.05, 58.26, 69.49], "n": 228, "conf": false}}, "LEAD": {"names": ["d_caps", "d_emoji", "d_img", "cta_atf", "cta_found", "cta_filled", "cta_contrast", "cta_width", "focused", "app", "app_rating", "press", "regulated", "security", "stats", "logos", "pricing", "form_atf", "how_it_works", "calculator", "experts", "testimonials", "faq", "structure", "sections", "hero_clear", "hero_size", "no_overflow", "no_popup", "no_wall", "calm_promos"], "mu": [0.787, 0.9804, 0.5068, 0.4196, 0.8112, 0.2867, 0.4255, 0.3004, 0.3636, 0.3566, 0.0629, 0.1329, 0.6434, 0.1119, 0.1445, 0.5303, 0.4476, 0.1608, 0.1608, 0.3636, 0.2727, 0.2448, 0.4336, 0.7338, 0.6168, 0.7552, 0.604, 0.8182, 0.8042, 0.1294, 0.9353], "sd": [0.1517, 0.0955, 0.402, 0.4935, 0.3914, 0.4522, 0.3073, 0.3843, 0.481, 0.479, 0.2428, 0.3394, 0.479, 0.3152, 0.2602, 0.395, 0.4972, 0.3674, 0.3674, 0.481, 0.4454, 0.4299, 0.4956, 0.3305, 0.3821, 0.4299, 0.3432, 0.3857, 0.3968, 0.2755, 0.2074], "w": [0.0144, 0.0661, 0.0081, 0.0, 0.0215, 0.0029, 0.0009, 0.0, 0.0229, 0.0, 0.0455, 0.0456, 0.0329, 0.0422, 0.0349, 0.0, 0.0236, 0.0502, 0.0591, 0.0, 0.0312, 0.0167, 0.0205, 0.0, 0.0303, 0.0245, 0.0227, 0.0171, 0.0678, 0.0, 0.0172], "anchors": [-0.1085, -0.0242, 0.0807], "n": 143, "zc": 1.5}};
+  function mCap(v, c) { return Math.min(+v || 0, c) / c; }
+  function mG(f, k) { return +f[k] || 0; }
+  function designVec(f) { return { d_caps: 1 - Math.min(1, mG(f, "d_caps") / 0.5), d_emoji: 1 - mCap(mG(f, "d_emoji"), 5), d_img: mCap(mG(f, "d_img_cover"), 0.6) }; }
+  function vecOf(T, f) {
+    var g = function (k) { return mG(f, k); }, v;
+    if (T === "PDP") v = { cta_atf: g("cta_atf"), cta_filled: g("cta_filled"), sticky_cta: g("sticky_cta"), price_atf: g("price_atf"), rating_top: g("rating_top"), offer: g("offer"), delivery_near: g("delivery_near"), trust_near: mCap(g("trust_near"), 4), benefits: mCap(g("benefit_bullets"), 6), structure: mCap(g("headings"), 15), breadcrumb: g("breadcrumb"), compare: g("compare_table"), faq: g("faq"), social: g("social_scale"), reviews: mCap(g("review_count_log"), 3), gallery: mCap(g("gallery"), 6), video: g("video"), crosssell: g("crosssell"), variants: g("variants_ui"), cta_contrast: mCap(g("cta_contrast"), 4), no_overflow: 1 - g("overflow"), short_title: 1 - Math.min(1, Math.max(0, (g("title_len") - 60) / 60)), no_wall: 1 - g("text_wall") / 2, no_popup: 1 - Math.min(g("fixed_layers"), 1), returns_near: g("returns_near"), free_ship: g("free_ship_msg"), payment_opts: g("payment_opts"), how_to_use: g("how_to_use"), composition: g("composition"), guarantee: g("guarantee"), calm_promos: 1 - mCap(g("promo_noise"), 8) };
+    else if (T === "HOME") { var hw = g("hero_words"); v = { hero_cta: g("hero_cta"), hero_clear: hw >= 4 && hw <= 40 ? 1 : 0, categories: mCap(g("category_entries"), 8), products_early: mCap(g("cards_top"), 8), card_price: g("card_price"), card_rating: g("card_rating"), proof: Math.max(g("social_scale"), g("testimonials"), g("rating_top")), trust: mCap(g("trust_page"), 5), bestsellers: g("bestsellers"), search: g("search_box"), no_carousel: 1 - g("carousel"), no_overflow: 1 - g("overflow"), no_popup: 1 - Math.min(g("fixed_layers"), 1), calm_promos: 1 - mCap(g("promo_noise"), 8), products_soon: 1 - Math.min(1, (g("first_product_screens") || 10) / 4), newsletter: g("newsletter_incentive"), structure: mCap(g("headings"), 15), press: g("press"), stats: mCap(g("stat_claims"), 3), logos: mCap(g("logos_strip"), 6), sections: mCap(g("feature_sections"), 10), hero_size: mCap(g("hero_head_size"), 40), no_wall: 1 - g("text_wall") / 2 }; }
+    else if (T === "COLLECTION") v = { products_early: mCap(g("cards_top"), 8), card_price: g("card_price"), card_rating: g("card_rating"), card_add: g("card_add"), card_swatch: g("card_swatch"), card_badge: g("card_badge"), filter: g("filter_ui"), sort: g("sort_ui"), count: g("product_count"), desc: g("collection_desc"), breadcrumb: g("breadcrumb"), products_soon: 1 - Math.min(1, (g("first_product_screens") || 10) / 3), no_overflow: 1 - g("overflow"), no_popup: 1 - Math.min(g("fixed_layers"), 1), calm_promos: 1 - mCap(g("promo_noise"), 8), title: g("h1"), structure: mCap(g("headings"), 15) };
+    else { var n = g("lead_cta_atf_n"), hw2 = g("hero_head_words"); v = { cta_atf: g("lead_cta_atf"), cta_found: g("lead_cta_found"), cta_filled: g("lead_cta_filled"), cta_contrast: mCap(g("lead_cta_contrast"), 4), cta_width: Math.min(1, g("lead_cta_width") / 0.6), focused: n >= 1 && n <= 2 ? 1 : 0, app: g("app_badges"), app_rating: g("app_rating"), press: g("press"), regulated: g("regulated"), security: g("security"), stats: mCap(g("stat_claims"), 3), logos: mCap(g("logos_strip"), 6), pricing: g("pricing_link"), form_atf: g("form_atf"), how_it_works: g("how_it_works"), calculator: g("calculator"), experts: g("doctor_proof"), testimonials: g("testimonials"), faq: g("faq"), structure: mCap(g("headings"), 15), sections: mCap(g("feature_sections"), 10), hero_clear: hw2 >= 3 && hw2 <= 14 ? 1 : 0, hero_size: mCap(g("hero_head_size"), 40), no_overflow: 1 - g("overflow"), no_popup: 1 - Math.min(g("fixed_layers"), 1), no_wall: 1 - g("text_wall") / 2, calm_promos: 1 - mCap(g("promo_noise"), 8) }; }
+    var d = designVec(f); for (var k in d) v[k] = d[k];
+    return v;
   }
-  function croScoreOf(f) {
-    if (!f) return null;
-    var M = CRO_MODEL, v = croVector(f), raw = 0, parts = [];
-    M.names.forEach(function (n, i) { var c = M.w[i] * ((+v[n] || 0) - M.mu[i]) / M.sd[i]; raw += c; if (M.w[i] > 0) parts.push({ k: n, c: c, on: (+v[n] || 0) >= 0.5 }); });
-    var a = M.anchors, sc;
-    if (raw >= a[2]) sc = 80 + 18 * (1 - Math.exp(-(raw - a[2]) / (a[2] - a[1])));
-    else if (raw <= a[0]) sc = 30 - 25 * (1 - Math.exp(-(a[0] - raw) / (a[1] - a[0])));
-    else if (raw <= a[1]) sc = 30 + 25 * (raw - a[0]) / (a[1] - a[0]);
-    else sc = 55 + 25 * (raw - a[1]) / (a[2] - a[1]);
+  function softCal(raw, a) {
+    if (raw >= a[2]) return 80 + 18 * (1 - Math.exp(-(raw - a[2]) / Math.max(1e-6, a[2] - a[1])));
+    if (raw <= a[0]) return 30 - 25 * (1 - Math.exp(-(a[0] - raw) / Math.max(1e-6, a[1] - a[0])));
+    return raw <= a[1] ? 30 + 25 * (raw - a[0]) / (a[1] - a[0]) : 55 + 25 * (raw - a[1]) / (a[2] - a[1]);
+  }
+  function modelScore(T, f) {
+    var m = MODELS[T]; if (!m || !f) return null;
+    var v = vecOf(T, f), raw = 0, parts = [];
+    m.names.forEach(function (n, i) { var z = ((+v[n] || 0) - m.mu[i]) / m.sd[i]; z = Math.max(-m.zc, Math.min(m.zc, z)); var c = m.w[i] * z; raw += c; if (m.w[i] > 0) parts.push({ k: n, c: c }); });
     parts.sort(function (x, y) { return y.c - x.c; });
-    return { score: Math.round(sc), raw: Math.round(raw * 1000) / 1000, up: parts.filter(function (x) { return x.c > 0.004; }).slice(0, 4).map(function (x) { return x.k; }),
-      down: parts.filter(function (x) { return x.c < -0.004; }).reverse().slice(0, 4).map(function (x) { return x.k; }), f: f, v: 3, n: M.n };
+    return { score: softCal(raw, m.anchors), raw: raw, up: parts.filter(function (x) { return x.c > 0.004; }).slice(0, 4).map(function (x) { return x.k; }),
+      down: parts.filter(function (x) { return x.c < -0.004; }).reverse().slice(0, 4).map(function (x) { return x.k; }) };
+  }
+  var CRO_LABEL = {
+    cta_atf: "Main button on the first screen", cta_filled: "Solid main button", sticky_cta: "Button stays in reach while scrolling", price_atf: "Price on the first screen",
+    rating_top: "Stars near the product name", offer: "A clear offer", delivery_near: "Delivery info by the button", trust_near: "Reassurance by the button", benefits: "Scannable benefit points",
+    structure: "Well-structured page", breadcrumb: "Breadcrumbs", compare: "Comparison table", faq: "FAQs", social: "Customer numbers", reviews: "Review volume", gallery: "Enough product photos",
+    video: "Product video", crosssell: "Bundles or cross-sell", variants: "Clear variant picker", cta_contrast: "Button stands out", no_overflow: "Fits the phone screen", short_title: "Short, clear title",
+    no_wall: "No walls of text", no_popup: "No popup covering the page", returns_near: "Returns shown by the button", free_ship: "Free-shipping message", payment_opts: "Payment options shown",
+    how_to_use: "How-to-use guidance", composition: "Ingredients or materials", guarantee: "A guarantee", calm_promos: "Offers kept focused",
+    hero_cta: "A clear action in the first screen", hero_clear: "First screen says what you sell", categories: "Categories visible early", products_early: "Products fill the first screens",
+    card_price: "Prices on product cards", card_rating: "Ratings on product cards", proof: "Reviews or customer proof", trust: "Shipping, returns and payment reassurance", bestsellers: "Bestsellers featured",
+    search: "Visible search", no_carousel: "One focused hero, not a carousel", products_soon: "Products appear early", newsletter: "Sign-up with a clear incentive", press: "Press or partner mentions",
+    stats: "Customer numbers", logos: "Partner or press logos", sections: "Clear page sections", hero_size: "A bold headline", card_add: "Quick add on product cards", card_swatch: "Colour options on cards",
+    card_badge: "Badges on cards", filter: "Filters", sort: "Sorting", count: "Product count shown", desc: "Collection intro", title: "Clear collection title",
+    cta_found: "A sign-up or apply action", cta_width: "A large, easy-to-tap button", focused: "One or two focused actions", app: "App store links", app_rating: "App rating shown", regulated: "Licence or regulation shown",
+    security: "Data-security reassurance", pricing: "Pricing or fees easy to find", form_atf: "Form or entry point near the top", how_it_works: "How it works", calculator: "Calculator or eligibility check",
+    experts: "Expert or doctor credentials", testimonials: "Testimonials", d_caps: "Calm typography (not all caps)", d_emoji: "No emoji clutter", d_img: "Strong visuals on the first screen"
+  };
+  var RUBRIC_LABEL = CRO_LABEL;
+  var CRO_LABEL_NEG = {
+    cta_atf: "Main button below the first screen", cta_filled: "Main button is outlined, not solid", sticky_cta: "No sticky buy button", price_atf: "Price below the first screen",
+    rating_top: "No stars near the product name", offer: "No clear offer", delivery_near: "No delivery info by the button", trust_near: "Little reassurance by the button", benefits: "No scannable benefit points",
+    structure: "Page not broken into sections", breadcrumb: "No breadcrumbs", compare: "No comparison table", faq: "No FAQs", social: "No customer numbers", reviews: "Few reviews",
+    gallery: "Few product photos", video: "No product video", crosssell: "No bundles or cross-sell", variants: "Unclear variant picker", cta_contrast: "Main button doesn't stand out",
+    no_overflow: "Page wider than the phone", short_title: "Long product name", no_wall: "Walls of text", no_popup: "Popup covering the page", returns_near: "Returns not shown by the button",
+    free_ship: "No free-shipping message", payment_opts: "Payment options not shown", how_to_use: "No how-to-use guidance", composition: "No ingredients or materials", guarantee: "No guarantee",
+    calm_promos: "Too many competing offers", hero_cta: "No clear action in the first screen", hero_clear: "First screen doesn't say what you sell", categories: "Few categories up top",
+    products_early: "Few products in the first screens", card_price: "Cards without prices", card_rating: "Cards without ratings", proof: "No reviews or customer proof",
+    trust: "Little shipping, returns or payment reassurance", bestsellers: "No bestsellers featured", search: "No visible search", no_carousel: "Rotating hero carousel", products_soon: "Products appear late",
+    newsletter: "Sign-up without a reason", press: "No press or partner mentions", stats: "No customer numbers", logos: "No partner or press logos", sections: "Few clear page sections",
+    hero_size: "Headline doesn't stand out", card_add: "No quick add on cards", card_swatch: "No colour options on cards", card_badge: "No badges on cards", filter: "No filters", sort: "No sorting",
+    count: "Product count not shown", desc: "No collection intro", title: "No clear collection title", cta_found: "No sign-up or apply action", cta_width: "Small main button",
+    focused: "Too many competing actions", app: "No app store links", app_rating: "No app rating shown", regulated: "No licence or regulation shown", security: "No data-security reassurance",
+    pricing: "Pricing or fees hard to find", form_atf: "No form or entry point near the top", how_it_works: "No how-it-works section", calculator: "No calculator or eligibility check",
+    experts: "No expert or doctor credentials", testimonials: "No testimonials", d_caps: "Lots of ALL-CAPS text", d_emoji: "Emoji clutter", d_img: "Weak visuals on the first screen"
+  };
+
+  function howV4(R) {
+    var c = R.cro, T = c.labels, what = T === "LEAD" ? "a sign-up site: whether the first screen says what you offer and gives one clear action, and whether you show proof, licences, data security, pricing and how it works"
+      : T === "PDP" ? "a product page: the main button and price on the first screen, stars near the name, delivery and returns by the button, reviews, photos, structure and clutter"
+      : T === "COLLECTION" ? "a collection: products in the first screens, prices and ratings on cards, filters, sorting and clutter" : "a homepage: a clear promise and action up top, bestsellers, proof, a focused hero instead of a carousel, and clutter";
+    var t = "We load your page on a 390px phone, the way a visitor sees it, and measure it as " + what + ". ";
+    t += "We measured 570+ sites the same way: Indian and US D2C brands, big retailers, small unknown stores, fintech and healthtech. The weights come from what separated the strong sites from the weak ones, and a signal can only add to your score if CRO practice says it helps. ";
+    if (c.kind === "blend" && c.side) t += (c.side.type === "HOME" ? "We also measured your homepage (" + c.side.score + "/100). Your score combines both pages, this page weighted 70% and the homepage 30%, and ranks the result against the benchmark. " : "We also measured one of your product pages (" + c.side.score + "/100). Your score combines both pages, this page weighted " + (T === "HOME" ? "50%" : "30%") + " and the product page " + (T === "HOME" ? "50%" : "70%") + ", and ranks the result against the benchmark. ") + "Judging two pages of the same site separates strong and weak stores more reliably than one page. ";
+    else if (T !== "LEAD") t += "This score is based on this page. ";
+    t += "A weak site typically scores around 30, an average one around 55 and a strong one 80 or more.";
+    t += R.psi ? " Google PageSpeed counts for 20%." : " Speed, search and accessibility are shown for context and don’t change this score.";
+    return t;
+  }
+  /* Lead-gen sites (fintech, healthtech, services): no cart, no product cards, but a sign-up, apply or booking action. */
+  function isLeadPage(f, page) {
+    if (!f) return false;
+    if (page && /shopify|woocommerce|magento|bigcommerce|wix stores|salesforce commerce/i.test(page.platform || "")) return false;
+    if (page && page.pageType === "PDP") return false;
+    return !f.cta_found && (f.cards || 0) < 3 && !f.price_atf && !!(f.lead_cta_found || f.form_atf || f.app_badges || f.regulated);
+  }
+  /* The score of a store page uses a second page of the same site: product page + homepage. */
+  function croScore(f, pageType, side, lead) {
+    if (!f) return null;
+    var T = lead ? "LEAD" : pageType === "PDP" || !pageType ? "PDP" : pageType === "COLLECTION" ? "COLLECTION" : "HOME";
+    var own = modelScore(T, f); if (!own) return null;
+    var out = { page: Math.round(own.score), up: own.up, down: own.down, f: f, v: 4, labels: T, kind: "model", n: MODELS[T].n, score: Math.round(own.score) };
+    var B = MODELS[T].blend;
+    /* a product page is paired with the homepage; a homepage or collection with a product page. Anything else stays single-page. */
+    var oT = T === "PDP" ? "HOME" : "PDP";
+    if (B && side && side.f && side.type === oT) {
+      var o = modelScore(oT, side.f);
+      if (o) {
+        var wPdp = T === "PDP" ? 1 - B.homeW : B.pdpW, sP = T === "PDP" ? own.score : o.score, sO = T === "PDP" ? o.score : own.score;
+        out.kind = "blend"; out.side = { type: oT, score: Math.round(o.score), url: side.url }; out.score = Math.round(softCal(wPdp * sP + (1 - wPdp) * sO, B.anchors)); out.n = B.n;
+      }
+    }
+    return out;
+  }
+  /* The second page counts toward the score, so its biggest issues are listed too (one priority step lower than the scanned page's own). */
+  function addSideFindings(R, side, type) {
+    var rc = renderedChecks(side.f, { pageType: type, category: (R.page || {}).category || "" }), label = type === "HOME" ? "Homepage" : "Product page";
+    R.lib = R.lib || { signals: {}, barriers: {}, rootCauses: {} };
+    var fails = rc.checks.filter(function (c) { return c.status === "fail" && !JS_REVIEW_RULES[c.key]; }).map(function (c) { return { c: c, s: rc.signals[c.signal] }; });
+    fails.sort(function (a, b) { return (b.s.severity || 1) - (a.s.severity || 1); });
+    fails.slice(0, 4).forEach(function (x) {
+      var key = "side_" + x.c.key, id = "TC-SIDE-" + x.c.key.toUpperCase();
+      R.checks = (R.checks || []).filter(function (c) { return c.key !== key; });
+      R.checks.push({ key: key, signal: id, status: "fail", evidence: label + ": " + x.c.evidence, confidence: "high", rendered: true, uiux: x.c.uiux, side: type });
+      R.lib.signals[id] = Object.assign({}, x.s, { name: label + ": " + x.s.name, severity: Math.max(1, (x.s.severity || 2) - 1) });
+      SHORT[key] = label + ": " + (SHORT[x.c.key] || x.s.name).replace(/ on the homepage$/i, "").replace(/^./, function (m) { return m.toLowerCase(); });
+    });
+  }
+  function croScoreOf(f) { var m = modelScore("PDP", f); return m ? { score: Math.round(m.score) } : null; }
+  function productLinkOf(html, base) {
+    var re = /href\s*=\s*["']([^"'#?]*\/products?\/[^"'#?\/]+)/gi, m, seen = 0;
+    while ((m = re.exec(html)) && seen < 40) {
+      seen++;
+      try { var u = new URL(m[1].replace(/&amp;/g, "&"), base); if (u.hostname.replace(/^www\./, "") === new URL(base).hostname.replace(/^www\./, "") && !/\.(js|css|json|png|jpe?g|webp)$/i.test(u.pathname)) return u.href; } catch (e) {}
+    }
+    return null;
   }
   /* measure in a hidden phone-sized frame, exactly like the benchmark */
   function measureCro(html) {
@@ -1187,7 +1486,15 @@
       fr.style.cssText = "position:absolute;left:-10000px;top:0;width:390px;height:844px;border:0;visibility:hidden;pointer-events:none";
       fr.srcdoc = html; doc.body.appendChild(fr);
       function finish(x) { if (done) return; done = true; try { fr.remove(); } catch (e) { /* gone */ } res(x); }
-      fr.addEventListener("load", function () {
+      var started = false;
+      /* Image-heavy pages can take a long time to fire "load"; measure at load or 6s after the document is parsed, whichever comes first. */
+      var poll = setInterval(function () {
+        var d0; try { d0 = fr.contentDocument; } catch (e) { d0 = null; }
+        if (d0 && d0.body && d0.readyState !== "loading" && d0.readyState !== "uninitialized") { clearInterval(poll); setTimeout(go, 6000); }
+      }, 250);
+      fr.addEventListener("load", function () { clearInterval(poll); go(); });
+      function go() {
+        if (started) return; started = true;
         var d, w; try { d = fr.contentDocument; w = fr.contentWindow; } catch (e) { return finish(null); }
         if (!d || !d.body) return finish(null);
         $$("img", d).forEach(function (im) {
@@ -1200,12 +1507,12 @@
           try {
             var f = croFeatures(d, w);
             var visibleText = (d.body.innerText || "").replace(/\s+/g, " ").length;
-            if (!f || visibleText < 250 || (!f.cta_found && !f.h1)) return finish(null);
-            finish(croScoreOf(f));
+            if (!f || visibleText < 250 || (!f.cta_found && !f.h1 && !f.cards && !f.hero_cta && !f.lead_cta_found)) return finish(null);
+            finish({ f: f });
           } catch (e) { finish(null); }
         }, 2200);
-      });
-      setTimeout(function () { finish(null); }, 14000);
+      }
+      setTimeout(function () { clearInterval(poll); finish(null); }, 16000);
     });
   }
 
@@ -1257,7 +1564,8 @@
     rescore(R);
     if (R.cro && R.cro.score != null) {
       var ps3 = R.psi && R.psi.scores ? R.psi.scores : null, realSpeed = ps3 && ps3.performance != null;
-      areas.push({ key: "conversion", name: "Shopper experience", w: realSpeed ? 80 : 100, v: R.cro.score, src: "Ranked against " + (R.cro.n || 60) + " product pages we measured the same way" });
+      var lead4 = R.cro.labels === "LEAD";
+      areas.push({ key: "conversion", name: lead4 ? "Visitor experience" : "Shopper experience", w: realSpeed ? 80 : 100, v: R.cro.score, src: R.cro.v === 4 ? "Ranked against " + R.cro.n + (lead4 ? " fintech, healthtech and service sites" : " sites") + " we measured the same way" : "Ranked against " + (R.cro.n || 60) + " product pages we measured the same way" });
       if (realSpeed) areas.push({ key: "speed", name: "Speed", w: 20, v: ps3.performance, src: "Google PageSpeed, mobile" });
       else areas.push({ key: "speed", name: "Speed", w: 0, ctx: true, est: true, v: R.lite ? R.lite.speedEstimate : null, src: "Estimated, so not scored" });
       var aiC = (R.ai && R.ai.checks) || [];
@@ -1266,7 +1574,7 @@
       areas.push({ key: "agent", name: "Agent readiness", w: 0, v: R.ai && R.ai.agent ? R.ai.agent.score : null, ctx: true, src: "Shown, not scored" });
       areas.push({ key: "stack", name: "Growth stack", w: 0, v: R.stack ? R.stack.score : null, ctx: true, src: "Shown, not scored" });
       var t3 = realSpeed ? Math.round(0.8 * R.cro.score + 0.2 * ps3.performance) : R.cro.score;
-      var v3 = t3 >= 80 ? "Strong. Small gains left." : t3 >= 65 ? "Good, with clear room to grow." : t3 >= 45 ? "Average. Real sales are slipping away." : "Needs work. Shoppers are hitting walls.";
+      var v3 = t3 >= 80 ? "Strong. Small gains left." : t3 >= 65 ? "Good, with clear room to grow." : t3 >= 45 ? (lead4 ? "Average. Sign-ups are slipping away." : "Average. Real sales are slipping away.") : (lead4 ? "Needs work. Visitors are hitting walls." : "Needs work. Shoppers are hitting walls.");
       return { areas: areas, total: t3, est: false, verdict: v3, v3: true };
     }
     var conv = R.conversion && R.conversion.score != null ? R.conversion.score : null;
@@ -1303,15 +1611,24 @@
     if (goal === "conversion" && /Trust|Clarity|Friction/.test(rc)) return 1;
     return 0;
   }
+  /* shown as context, never as a problem: absence alone isn't a conversion issue */
+  /* the Scanner never fails these: urgency is informational, price anchor only matters when discounted, payment options and chat are minor */
+  var INFO_ONLY = { pdp_urgency: 1, pdp_anchor: 1, pdp_cod: 1, pdp_emi: 1, live_chat: 1, newsletter: 1 };
   function findingsOf(R) {
     var L = R.lib || { signals: {} }, goal = (R.inputs && R.inputs.goal) || "conversion", out = [];
     (R.checks || []).forEach(function (c) {
-      if (c.status !== "fail" || /^SIG-(MOB|A11Y)/.test(c.signal)) return;
-      out.push({ area: "conversion", key: c.key, signal: c.signal, evidence: c.evidence, sig: L.signals[c.signal] || null });
+      if (c.status !== "fail" || /^SIG-(MOB|A11Y)/.test(c.signal) || INFO_ONLY[c.key]) return;
+      var fi = { area: "conversion", key: c.key, signal: c.signal, evidence: c.evidence, sig: L.signals[c.signal] || null, uiux: c.uiux || null, rendered: !!c.rendered };
+      fi.uiux = uiuxOf(fi);
+      /* code-level checks take the Scanner's severity tier for the same rule */
+      if (!fi.rendered && fi.uiux && UIUX_SEV[fi.uiux] && fi.sig) fi.sig = Object.assign({}, fi.sig, { severity: UIUX_TIER[UIUX_SEV[fi.uiux]] });
+      out.push(fi);
     });
     ((R.psi && R.psi.findings) || []).forEach(function (f) {
       if (f.area !== "speed") return;
-      out.push({ area: "speed", key: "psi", signal: f.signal, evidence: f.evidence, sig: L.signals[f.signal] || null });
+      var fs2 = { area: "speed", key: "psi", signal: f.signal, evidence: f.evidence, sig: L.signals[f.signal] || null, uiux: PSI_U[f.signal] || null };
+      if (fs2.uiux && fs2.sig) fs2.sig = Object.assign({}, fs2.sig, { severity: UIUX_TIER[UIUX_SEV[fs2.uiux]] });
+      out.push(fs2);
     });
     out.forEach(function (f) {
       var s = f.sig || {}, fx = s.fix || {};
@@ -1324,6 +1641,7 @@
   }
   function whereOf(f, R) {
     var p = R.page || {}, s = f.sig || {};
+    if (/^side_/.test(f.key)) return (R.cro && R.cro.side && R.cro.side.type === "HOME" ? "Your homepage" : "Your product page") + (R.cro && R.cro.side && R.cro.side.url ? " (" + R.cro.side.url.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60) + ")" : "");
     if (f.key === "hero_single_action") return "First screen" + (p.heroHeadline ? ": “" + p.heroHeadline.slice(0, 70) + "”" : "");
     if (f.key === "cta_copy") return "Main button: “" + (p.primaryCta || "") + "”";
     if (f.key === "proof_density") return "First screen, near the main button";
@@ -1343,7 +1661,7 @@
   }
   function measureOf(f, R) {
     var t = ((f.sig || {}).fix || {}).testType || "A/B";
-    var metric = f.area === "speed" ? "load time and bounce rate" : (R.page && R.page.pageType === "PDP") ? "add-to-cart rate" : "click-through to products and add-to-cart rate";
+    var metric = f.area === "speed" ? "load time and bounce rate" : (R.page && R.page.lead) ? "sign-up or enquiry rate" : (R.page && R.page.pageType === "PDP") ? "add-to-cart rate" : "click-through to products and add-to-cart rate";
     var d = abDays(R);
     if (t === "A/B") {
       if (d != null && d > 45) return "At your traffic, a clean A/B test would take about " + Math.round(d / 7) + " weeks, so we'd ship it and compare " + metric + " before and after.";
@@ -1417,9 +1735,11 @@
       return '<div class="rp-area' + (a.ctx ? " ctx" : "") + (a.v == null ? " na" : "") + '" title="' + esc(a.src) + '"><span class="nm">' + esc(a.name) + (a.est && a.v != null ? "<em>est.</em>" : "") + '</span><span class="bar"><i style="width:' + (a.v || 0) + "%;background:" + colorFor(a.v) + '"></i></span><b>' + (a.v == null ? "n/a" : a.v) + '</b><span class="w">' + (a.w ? a.w + "%" : "info") + "</span></div>";
     }).join("") + "</div>";
     if (C.v3) {
-      var up = (R.cro.up || []).map(function (k) { return "<li class=\"up\">" + esc(CRO_LABEL[k] || k) + "</li>"; }).join("");
-      var dn = (R.cro.down || []).map(function (k) { return "<li class=\"dn\">" + esc(CRO_LABEL[k] || k) + "</li>"; }).join("");
-      h += '<details class="rp-how"><summary>How the score works</summary><p>We load your page on a 390px phone and measure what a shopper sees: the main button and price on the first screen, the stars near the product name, delivery and reassurance next to the button, how the page is structured and whether it fits the screen. Your page is then ranked against ' + (R.cro.n || 60) + ' product pages we measured the same way, from strong D2C brands to small unknown stores. The weights come from what separated the strong pages from the weak ones, not from guesswork. A typical weak page scores around 30, an average one around 55 and a strong one 80 or more.' + (R.psi ? " Google PageSpeed counts for 20%." : " Speed, search and accessibility are shown for context and don’t change this score.") + "</p>" + (up || dn ? '<div class="rp-moved">' + (up ? "<div><b>Helping your score</b><ul>" + up + "</ul></div>" : "") + (dn ? "<div><b>Holding it back</b><ul>" + dn + "</ul></div>" : "") + "</div>" : "") + "</details></div>";
+      var LBL = R.cro.kind === "rubric" || R.cro.kind === "blend" ? RUBRIC_LABEL : CRO_LABEL;
+      var up = (R.cro.up || []).map(function (k) { return "<li class=\"up\">" + esc(LBL[k] || k) + "</li>"; }).join("");
+      var dn = (R.cro.down || []).map(function (k) { return "<li class=\"dn\">" + esc((R.cro.v === 4 && CRO_LABEL_NEG[k]) || LBL[k] || k) + "</li>"; }).join("");
+      if (R.cro.v === 4) h += '<details class="rp-how"><summary>How the score works</summary><p>' + esc(howV4(R)) + "</p>" + (up || dn ? '<div class="rp-moved">' + (up ? "<div><b>Helping your score</b><ul>" + up + "</ul></div>" : "") + (dn ? "<div><b>Holding it back</b><ul>" + dn + "</ul></div>" : "") + "</div>" : "") + "</details></div>";
+      else h += '<details class="rp-how"><summary>How the score works</summary><p>' + (R.cro.kind === "rubric" || R.cro.kind === "blend" ? "We load your page on a 390px phone and check it against research-based guidelines for " + (R.cro.labels === "COLLECTION" ? "collection pages: products in the first screens, prices and ratings on every card, filters, sorting and quick add" : "homepages: a clear promise and action in the first screen, categories and bestsellers early, proof, reassurance and search") + ", plus the rendered-page checks behind the findings below. " + (R.cro.kind === "blend" ? "In our benchmark of " + R.cro.n + " stores, " + (R.cro.labels === "COLLECTION" ? "collection" : "homepage") + " layout alone didn’t reliably tell strong stores from weak ones, but their product pages did. So we also measured one of your product pages (it scored " + R.cro.pdp.score + "/100) and it carries 70% of this score; this page’s own checks carry the other 30%." : "We couldn’t open one of your product pages, so this score uses this page alone. In our benchmark that is a weaker signal than a product page, so treat it as indicative and run the analysis on a product page for a firmer read.") + " The bottom fifth of stores scores around 30, the middle around 55, the top fifth 80 or more." : 'We load your page on a 390px phone and measure what a shopper sees: the main button and price on the first screen, the stars near the product name, delivery and reassurance next to the button, how the page is structured and whether it fits the screen. Your page is then ranked against ' + (R.cro.n || 60) + ' product pages we measured the same way, from strong D2C brands to small unknown stores. The weights come from what separated the strong pages from the weak ones, not from guesswork. A typical weak page scores around 30, an average one around 55 and a strong one 80 or more.') + (R.psi ? " Google PageSpeed counts for 20%." : " Speed, search and accessibility are shown for context and don’t change this score.") + "</p>" + (up || dn ? '<div class="rp-moved">' + (up ? "<div><b>Helping your score</b><ul>" + up + "</ul></div>" : "") + (dn ? "<div><b>Holding it back</b><ul>" + dn + "</ul></div>" : "") + "</div>" : "") + "</details></div>";
     } else
     h += '<details class="rp-how"><summary>How the score works</summary><p>' + (C.limited ? "We couldn’t render this page on a phone, so this is a limited score from its code only. " : "") + 'Conversion counts for 40%, speed 25%, accessibility 20% and search and AI 15%. Your weakest area pulls the total down further, because one broken area costs sales on its own. Basics every store needs, like a price or a contact link, earn nothing when present and cost a lot when missing, and checks we can only confirm from a keyword get partial credit. An area we couldn’t measure is left out, never counted as zero. Agent readiness and growth stack are shown for context, not scored.' + (C.est ? " Speed and accessibility are estimated from your page’s code when Google PageSpeed isn’t available." : "") + "</p></details></div>";
     h += '<div class="rp-page"><div class="browser"><div class="bbar"><i></i><i></i><i></i><span class="url">' + esc(host + (path.length > 1 ? path : "")) + '</span></div><div class="bview' + (shot ? " phone" : "") + '">';
@@ -1463,6 +1783,272 @@
     cat_diet: "No shop-by-diet path", cat_fresh: "No freshness reassurance", cat_hallmark: "No hallmark or certification bar", cat_gift: "No gifting path",
     cat_genuine: "No genuine-product promise", cat_age: "No shop-by-age path", cat_safety: "No safety credentials", cat_pet: "No shop-by-pet path", cat_vet: "No vet validation", cat_sport: "No shop-by-sport path"
   };
+  /* ---------------- rendered-page findings ----------------
+     Checks run on the page as drawn on a 390px phone (not just its code). Each maps to TrooCRO buyer barriers;
+     fixes follow the barrier library's "what good looks like" and published e-commerce UX research. */
+  var CAT_HAS = function (cat, list) { return list.indexOf(cat) >= 0; };
+  var RULES = [
+    /* ---------- product page ---------- */
+    { k: "rc_cta_atf", u: "cta-fold", t: "PDP", b: ["B70", "B67"], rc: "Friction / UX", sev: 3, sevf: function (f) { return f.cta_atf >= 0.5 ? 2 : 3; }, r: "cta", s: "Add to cart below the first screen", n: "Add to cart not on the first phone screen",
+      ok: function (f) { return f.cta_found && !f.cta_hidden ? (f.cta_atf >= 1 || !!f.sticky_cta) : null; }, ev: ["On a phone, Add to cart sits below the first screen, so shoppers scroll before they can act.", "Add to cart is visible on the first phone screen."],
+      fx: ["S", "H", "A/B", "Fit the product name, price, one benefit line and Add to cart into the first phone screen.", ["Shorten the image gallery on mobile so Add to cart lands above the fold", "Move secondary badges and long offers below the button"]] },
+    { k: "rc_sticky", u: "pdp-sticky", t: "PDP", b: ["B67", "B70"], rc: "Friction / UX", sev: 2, r: "cta", s: "No sticky Add to cart while scrolling", n: "Add to cart scrolls out of reach",
+      ok: function (f) { return f.cta_found && !f.cta_hidden ? !!f.sticky_cta : null; }, ev: ["Once shoppers scroll into the details, there is no sticky Add to cart to act on.", "A sticky Add to cart stays in reach while scrolling."],
+      fx: ["S", "M", "A/B", "Add a slim sticky bar with price and Add to cart that appears after the main button scrolls away.", ["Sticky Add to cart bar on mobile showing price and selected variant"]] },
+    { k: "rc_cta_style", u: "cta-strength", t: "PDP", b: ["B67"], rc: "Clarity failure", sev: 3, sevf: function (f) { return (0.55 * (f.cta_filled >= 1 ? Math.max(0, Math.min(1, ((f.cta_contrast || 1) - 1.25) / 1.75)) : 0.25) + 0.3 * Math.max(0, Math.min(1, ((f.cta_height || 0) - 26) / 18)) + 0.15 * Math.max(0, Math.min(1, ((f.cta_width || 0) * 366 - 60) / 96))) < 0.5 ? 3 : 2; }, r: "cta", s: "Main button doesn't stand out", n: "Low-contrast or outlined main button",
+      ok: function (f) { return f.cta_found && !f.cta_hidden ? (0.55 * (f.cta_filled >= 1 ? Math.max(0, Math.min(1, ((f.cta_contrast || 1) - 1.25) / 1.75)) : 0.25) + 0.3 * Math.max(0, Math.min(1, ((f.cta_height || 0) - 26) / 18)) + 0.15 * Math.max(0, Math.min(1, ((f.cta_width || 0) * 366 - 60) / 96))) >= 0.9 : null; }, ev: ["The main button is outlined or close in colour to the page, so it doesn't read as the next step.", "The main button is solid and stands out from the page."],
+      fx: ["S", "M", "A/B", "Make Add to cart a solid, full-width button in your strongest brand colour, and keep every other button visually quieter.", ["Solid full-width Add to cart in the brand accent colour"]] },
+    { k: "rc_price_atf", u: "pdp-price", t: "PDP", b: ["B05"], rc: "Offer weakness", sev: 3, sevf: function (f) { return f.price_atf >= 0.5 ? 2 : 3; }, r: "price", s: "Price not on the first screen", n: "Price hidden below the first screen",
+      ok: function (f) { return f.price_hidden ? null : f.price_atf >= 1; }, ev: ["Shoppers can't see the price without scrolling on a phone.", "Price is visible on the first phone screen."],
+      fx: ["S", "M", "A/B", "Show price, MRP and saving right under the product name.", ["Price block with MRP strike-through directly under the title"]] },
+    { k: "rc_rating_top", u: "proof", t: "PDP", b: ["B13"], rc: "Trust deficit", sev: 2, r: "reviews", s: "Star rating far from the product name", n: "Star rating missing near the title",
+      ok: function (f) { return f.rating_any ? !!f.rating_top : null; }, ev: ["Your star rating appears on the page, but not near the product name, where shoppers look first.", "A star rating sits near the product name."],
+      fx: ["S", "H", "A/B", "Put the star rating and review count right under the product name, linked to the reviews section.", ["Star rating and review count under the title, tapping through to reviews"]] },
+    { k: "rc_proof_none", u: "proof", t: "PDP", b: ["B13"], rc: "Trust deficit", sev: 3, r: "reviews", s: "No star ratings or reviews", n: "No social proof on the product page",
+      ok: function (f) { return !!(f.rating_any || f.rating_top); }, ev: ["We couldn't find star ratings, a review count or reviews anywhere on the page.", "Ratings or reviews are shown."],
+      fx: ["M", "H", "A/B", "Show the star rating and review count under the product name, and a reviews section with photos further down.", ["Star rating and count under the title", "Reviews section with photo reviews pinned first"]] },
+    { k: "rc_review_volume", u: "proof", t: "PDP", b: ["B13"], rc: "Trust deficit", sev: 2, r: "reviews", s: "Few reviews shown", n: "Thin review count",
+      ok: function (f) { return f.rating_any ? f.review_count_log >= 0.778 : null; }, ev: [function (f) { var n = Math.round(Math.pow(10, f.review_count_log || 0) - 1); return "Only " + n + " review" + (n === 1 ? "" : "s") + " show on the page; under five reads as unproven."; }, "Enough reviews show on the page."],
+      fx: ["M", "H", "Ship", "Grow and surface review volume: post-delivery review requests, and roll up reviews across variants and packs.", ["Automated review request 7 days after delivery with a photo prompt", "Show combined reviews across all sizes and packs"]] },
+    { k: "rc_photo_reviews", t: "PDP", b: ["B13", "B01"], rc: "Trust deficit", sev: 1, r: "content", s: "No customer photos in reviews", n: "Reviews without customer photos",
+      ok: function (f) { return f.review_cards ? !!f.photo_reviews : null; }, ev: ["Reviews have no customer photos, so shoppers can't see the product in real hands.", "Reviews include customer photos."],
+      fx: ["S", "M", "Ship", "Ask for photos in review requests and pin photo reviews first.", ["Photo-first review gallery near the top of the reviews section"]] },
+    { k: "rc_gallery", u: "pdp-gallery", t: "PDP", b: ["B01"], rc: "Clarity failure", sev: 2, r: "img", s: "Too few product photos", n: "Thin product gallery",
+      ok: function (f) { return ((f.gallery || 0) - 2) / 4 + (f.video ? 0.15 : 0) >= 0.5; }, ev: [function (f) { return "We found " + (f.gallery || 0) + " product images on the page. Buyers decide from photos: angles, scale, texture, in use."; }, function (f) { return f.gallery + " product images are on the page."; }],
+      fx: ["M", "H", "A/B", "Aim for 8 or more images: front, back, close-up texture, in hand for scale, in use, and what's in the box.", ["Add in-scale and in-use images to the gallery", "Thumbnail strip so shoppers know more images exist"]] },
+    { k: "rc_video", u: "pdp-gallery", t: "PDP", b: ["B01", "B68"], rc: "Desire deficit", sev: 1, r: "img", s: "No product video", n: "No product video",
+      ok: function (f) { return f.video >= 1; }, ev: ["There's no product video showing it in use.", "A product video is on the page."],
+      fx: ["M", "M", "A/B", "Add a 15 to 30 second in-use video as the second gallery item.", ["Short in-use video as the second gallery slide"]] },
+    { k: "rc_delivery_near", u: "pdp-delivery", t: "PDP", b: ["B09"], rc: "Trust deficit", sev: 1, r: "trust", s: "Delivery info far from the button", n: "Delivery date missing by the button",
+      ok: function (f) { return f.delivery_any ? !!f.delivery_near : null; }, ev: ["Delivery info is on the page, but not next to the main button where shoppers decide.", "Delivery info sits by the button."],
+      fx: ["S", "H", "A/B", "Show an estimated delivery date (or a pincode check) right under Add to cart.", ["'Get it by <date>' line under Add to cart with a pincode check"]] },
+    { k: "rc_delivery", u: "pdp-delivery", t: "PDP", b: ["B09"], rc: "Trust deficit", sev: 2, r: "trust", s: "No delivery promise", n: "No delivery date, dispatch time or pincode check",
+      ok: function (f) { return !!(f.delivery_any || f.delivery_near); }, ev: ["We couldn't find a delivery date, dispatch time or pincode check anywhere on the page.", "A delivery promise is shown."],
+      fx: ["S", "M", "A/B", "Show an estimated delivery date or a pincode check right under the main button.", ["'Get it by Thursday' line under Add to cart", "Pincode check with delivery date"]] },
+    { k: "rc_trust_near", u: "trust", t: "PDP", b: ["B04", "B08"], rc: "Trust deficit", sev: 1, r: "trust", s: "Little reassurance by the button", n: "No reassurance strip by the button",
+      ok: function (f) { return f.cta_found ? f.trust_near >= 2 : null; }, ev: [function (f) { return "Around Add to cart we found " + (f.trust_near || 0) + " reassurance cues (returns, COD, genuine, secure payment). This is where hesitation happens."; }, function (f) { return f.trust_near + " reassurance cues sit around Add to cart."; }],
+      fx: ["S", "H", "A/B", "Add a 3-icon strip under Add to cart: easy returns, cash on delivery or secure payment, and genuine product.", ["3-icon trust strip under Add to cart"]] },
+    { k: "rc_trust", u: "trust", t: "PDP", b: ["B08", "B09", "B10"], rc: "Trust deficit", sev: 2, r: "trust", s: "Missing delivery, returns or payment reassurance", n: "Store reassurance incomplete",
+      ok: function (f) { var need = [f.returns_msg, f.delivery_any || f.delivery_near, f.payment_opts]; if (f.india) need.push(f.cod_any); return need.filter(Boolean).length / need.length >= 0.5; },
+      ev: [function (f) { var miss = []; if (!f.returns_msg) miss.push("returns"); if (!(f.delivery_any || f.delivery_near)) miss.push("delivery"); if (!f.payment_opts) miss.push("payment options"); if (f.india && !f.cod_any) miss.push("cash on delivery"); return "Shoppers can't find " + miss.join(", ") + " on the page."; }, "Delivery, returns and payment are covered."],
+      fx: ["S", "H", "A/B", "Add one reassurance row under the main button: delivery time, easy returns, and payment options (COD where you offer it).", ["Icon row under Add to cart: delivery, returns, COD/UPI", "Link each item to the full policy"]] },
+    { k: "rc_returns_near", u: "trust", t: "PDP", b: ["B08"], rc: "Trust deficit", sev: 1, r: "trust", s: "Returns info far from the button", n: "Return promise missing near the button",
+      ok: function (f) { return f.returns_msg ? !!f.returns_near : null; }, ev: ["Your returns policy is on the page, but not next to the main button where shoppers hesitate.", "Returns info sits by the button."],
+      fx: ["S", "H", "A/B", "State the return window in plain words next to the button, for example '7-day easy returns'.", ["One-line return promise under Add to cart linking to the policy"]] },
+    { k: "rc_benefits", u: "pdp-benefits", t: "PDP", b: ["B03", "B68"], rc: "Clarity failure", sev: 1, r: "title", s: "No scannable benefit points", n: "Benefits buried in paragraphs",
+      ok: function (f) { return (f.benefit_bullets || 0) >= 2; }, ev: ["We couldn't find 3 or more short benefit points near the top; benefits sit in paragraphs shoppers skip.", "Benefit points are easy to scan."],
+      fx: ["S", "M", "A/B", "Add 3 to 4 outcome-first bullets under the title, each one line.", ["3 outcome-first benefit bullets under the product name"]] },
+    { k: "rc_structure", u: "subheads", t: "PDP", b: ["B67"], rc: "Friction / UX", sev: 1, r: "content", s: "Details not broken into sections", n: "Product details lack structure",
+      ok: function (f) { return f.headings >= 4 || f.accordions >= 3; }, ev: ["The product details aren't broken into clear sections, so answers are hard to find.", "Details are split into clear sections."],
+      fx: ["S", "M", "Ship", "Split details into labelled sections: benefits, how to use, ingredients or materials, shipping and returns, FAQ.", ["Collapsible sections with clear labels"]] },
+    { k: "rc_text_wall", u: "para", t: "ALL", b: ["B67"], rc: "Friction / UX", sev: 1, r: "content", s: "Long paragraphs", n: "Several paragraphs over 110 words",
+      ok: function (f) { return (f.long_paras || 0) < 3; }, ev: [function (f) { return f.long_paras + " paragraphs run over 110 words; on a phone that reads as a wall of text."; }, "Paragraphs are short enough to scan."],
+      fx: ["S", "L", "Ship", "Break long copy into short paragraphs, bullets and subheads.", ["Rewrite long blocks into bullets with subheads"]] },
+    { k: "rc_title", u: "h1", t: "PDP", b: ["B03"], rc: "Clarity failure", sev: 1, r: "title", s: "Product name too long", n: "Overlong product name",
+      ok: function (f) { return f.h1 ? f.title_len <= 70 : null; }, ev: [function (f) { return "The product name is " + f.title_len + " characters, so it wraps over several lines and pushes the price down."; }, "The product name is short and scannable."],
+      fx: ["S", "L", "A/B", "Keep the visible name under about 60 characters and move SEO keywords into the description.", ["Short display name with keywords moved below"]] },
+    { k: "rc_overflow", u: "hscroll", t: "ALL", b: ["B67"], rc: "Friction / UX", sev: 3, r: "nav", s: "Page wider than the phone screen", n: "Page spills sideways on phones",
+      ok: function (f) { return !f.overflow; }, ev: ["Part of the page is wider than a phone screen, so shoppers can pan sideways by accident.", "The page fits the phone screen."],
+      fx: ["S", "M", "Ship", "Find the element overflowing on mobile (often a wide table, image or slider) and constrain it to the screen width.", ["Fix the overflowing element on mobile"]] },
+    { k: "rc_lorem", u: "lorem", t: "ALL", b: ["B04"], rc: "Trust deficit", sev: 3, r: "content", s: "Placeholder text on the page", n: "Lorem ipsum or placeholder copy is live",
+      ok: function (f) { return !f.lorem; }, ev: ["The page still shows placeholder copy (like lorem ipsum), which makes the store look unfinished.", "No placeholder text."],
+      fx: ["S", "H", "Ship", "Replace every placeholder block with real copy before sending traffic to the page.", ["Search the theme for lorem ipsum and template text"]] },
+    { k: "rc_popup", u: "interstitial", t: "ALL", b: ["B67"], rc: "Friction / UX", sev: 3, r: "content", s: "Popup covers the page on load", n: "Popup covering the page",
+      ok: function (f) { return !f.fixed_layers; }, ev: ["A large overlay covers the page as it loads, before shoppers have seen the product.", "No overlay covers the page on load."],
+      fx: ["S", "M", "A/B", "Delay popups until scroll or exit intent, and never cover the product on first view.", ["Exit-intent or 30-second delayed popup instead of on load"]] },
+    { k: "rc_cta_compete", u: "cta-compete", t: "ALL", b: ["B67"], rc: "Clarity failure", sev: 2, r: "cta", s: "Too many competing buttons up top", n: "Several solid buttons compete on the first screen",
+      ok: function (f) { return f.solid_atf ? f.solid_atf <= 3 : null; }, ev: [function (f) { return f.solid_atf + " solid buttons compete on the first screen, so none of them reads as the next step."; }, "The first screen has a clear next step."],
+      fx: ["S", "M", "A/B", "Keep one solid primary button on the first screen; make secondary actions outlined or text links.", ["One solid primary button", "Secondary actions as text links"]] },
+    { k: "rc_promo_noise", t: "ALL", b: ["B67"], rc: "Friction / UX", sev: 1, r: "nav", s: "Too many competing offers", n: "Competing offers and codes",
+      ok: function (f) { return f.promo_noise <= 4; }, ev: [function (f) { return "We counted " + f.promo_noise + " separate offers, codes or discounts on the page, which compete with the product."; }, "Offers are kept focused."],
+      fx: ["S", "M", "A/B", "Lead with one offer near the price and move the rest into a single 'offers' drawer.", ["Single best offer by the price, others in a drawer"]] },
+    { k: "rc_how_to", t: "PDP", b: ["B11"], rc: "Clarity failure", sev: 1, r: "content", s: "No how-to-use guidance", n: "Missing how-to-use",
+      ok: function (f) { return !!f.how_to_use; }, ev: ["We couldn't find how-to-use or care guidance on the page.", "How-to-use guidance is on the page."],
+      fx: ["S", "M", "Ship", "Add a short 'How to use' section with 3 steps and how often.", ["3-step how-to-use block with icons"]] },
+    { k: "rc_composition", t: "PDP", b: ["B12", "B33", "B38"], rc: "Clarity failure", sev: 2, r: "content", s: "No ingredients, materials or specs", n: "Ingredients, materials or specs missing",
+      ok: function (f) { return !!f.composition; }, ev: ["We couldn't find ingredients, materials or specifications on the page.", "Ingredients, materials or specs are listed."],
+      fx: ["S", "M", "Ship", "List what it's made of in plain words, with the hero ingredients or materials called out.", ["Key ingredients or materials with one-line benefits"]] },
+    { k: "rc_size_guide", u: "pdp-variant", t: "PDP", cats: ["Fashion & Apparel", "Sports & Fitness"], b: ["B32", "B62", "B50"], rc: "Clarity failure", sev: 3, r: "details", s: "No size guide", n: "Size guide missing",
+      ok: function (f) { return !!f.size_guide; }, ev: ["There's no size chart or fit guide, which is the top reason apparel shoppers hesitate or return.", "A size guide is available."],
+      fx: ["S", "H", "A/B", "Add a size chart next to the size selector with body measurements and a fit note (true to size, runs small).", ["Size chart link beside sizes plus a one-line fit note"]] },
+    { k: "rc_dimensions", t: "PDP", cats: ["Home & Living"], b: ["B36", "B53"], rc: "Clarity failure", sev: 3, r: "details", s: "No dimensions shown", n: "Product dimensions missing",
+      ok: function (f) { return !!f.dimensions; }, ev: ["We couldn't find product dimensions, so shoppers can't tell if it fits their space.", "Product dimensions are shown."],
+      fx: ["S", "H", "A/B", "Show dimensions near the price and add a dimensions image with a person or room for scale.", ["Dimensions image in the gallery", "W x D x H line under the price"]] },
+    { k: "rc_certs", t: "PDP", cats: ["Health & Wellness", "Beauty & Personal Care", "Baby & Kids", "Food & Beverages", "Jewellery & Accessories", "Pet Care"], b: ["B29", "B46", "B12"], rc: "Trust deficit", sev: 2, r: "trust", s: "No certifications or testing shown", n: "Certifications or testing not shown",
+      ok: function (f) { return !!f.certs; }, ev: ["We couldn't find certifications or test claims (FSSAI, GMP, lab tested, hallmark and so on) on the page.", "Certifications or testing are shown."],
+      fx: ["S", "H", "A/B", "Show the relevant certification badges and a 'lab tested' proof near the price.", ["Certification badge row with links to reports"]] },
+    { k: "rc_free_ship", t: "PDP", b: ["B69"], rc: "Trust deficit", sev: 2, r: "price", s: "Shipping cost not shown", n: "Shipping cost or threshold missing",
+      ok: function (f) { return !!f.free_ship_msg; }, ev: ["The page doesn't say whether shipping is free or what it costs, so the total feels uncertain.", "Shipping cost or free-shipping threshold is shown."],
+      fx: ["S", "M", "A/B", "State shipping up front: 'Free delivery above ₹X' near the price.", ["Free-delivery threshold line by the price"]] },
+    { k: "rc_compare", t: "PDP", b: ["B07"], rc: "Offer weakness", sev: 1, r: "content", s: "No 'why us' comparison", n: "No comparison with alternatives",
+      ok: function (f) { return !!f.compare_table; }, ev: ["There's no comparison showing why this beats the alternatives.", "A comparison helps shoppers choose."],
+      fx: ["M", "M", "A/B", "Add a simple 'Us vs others' table on 3 to 4 points shoppers care about.", ["Us vs others comparison table"]] },
+    { k: "rc_crosssell", t: "PDP", b: ["B05"], rc: "Offer weakness", sev: 1, r: "content", s: "No bundles or cross-sell", n: "No bundle or cross-sell",
+      ok: function (f) { return !!f.crosssell; }, ev: ["There's no 'frequently bought together' or bundle, which leaves order value on the table.", "Bundles or cross-sell are offered."],
+      fx: ["M", "M", "A/B", "Add a 'Complete the routine' or 'Frequently bought together' bundle with a small saving.", ["2-item bundle with a visible saving"]] },
+    { k: "rc_gift", t: "PDP", cats: ["Jewellery & Accessories"], b: ["B19", "B21"], rc: "Offer weakness", sev: 2, r: "trust", s: "No gifting option", n: "Gifting not supported",
+      ok: function (f) { return !!f.gift; }, ev: ["We couldn't find gift wrap, a gift message or gift packaging, though jewellery is often bought as a gift.", "Gifting options are offered."],
+      fx: ["S", "M", "A/B", "Add a gift-wrap and message option near the button and show the gift box in the gallery.", ["Gift wrap toggle with a message field"]] },
+    { k: "rc_variants_ui", u: "pdp-variant", t: "PDP", b: ["B15"], rc: "Friction / UX", sev: 1, r: "details", s: "Variants in a dropdown", n: "Variant picker hidden in a dropdown",
+      ok: function (f) { return f.variants_ui === 0.5 ? false : null; }, ev: ["Variants sit in a dropdown, which hides the options shoppers are choosing between.", ""],
+      fx: ["S", "M", "A/B", "Show variants as buttons or swatches with stock status.", ["Variant buttons with out-of-stock marked"]] },
+    { k: "rc_tiny_taps", u: "tap", t: "ALL", b: ["B67"], rc: "Friction / UX", sev: 3, r: "content", s: "Tap targets too small", n: "Tiny tap targets",
+      ok: function (f) { return f.tiny_taps <= 8; }, ev: [function (f) { return f.tiny_taps + " links or buttons near the top are smaller than a fingertip (under 28px)."; }, "Tap targets are a comfortable size."],
+      fx: ["S", "L", "Ship", "Make icons and links at least 44px tall on mobile.", ["Increase tap areas of icons and small links"]] },
+    { k: "rc_small_text", u: "font", t: "ALL", b: ["B67"], rc: "Clarity failure", sev: 1, r: "content", s: "Text too small to read", n: "Small text on mobile",
+      ok: function (f) { return f.small_text <= 0.25; }, ev: [function (f) { return Math.round(f.small_text * 100) + "% of text near the top is smaller than 12px on a phone."; }, "Text is a readable size."],
+      fx: ["S", "L", "Ship", "Set body text to at least 14px on mobile.", ["Raise mobile body text to 14 to 16px"]] },
+    /* ---------- homepage ---------- */
+    { k: "rc_hero_cta", u: "cta-fold", t: "HOME", b: ["B65", "B67"], rc: "Clarity failure", sev: 3, r: "cta", s: "No clear action in the first screen", n: "Hero without a clear action",
+      ok: function (f) { return !!f.hero_cta; }, ev: ["The first screen has no clear button, so shoppers have to work out where to go.", "The first screen has a clear action."],
+      fx: ["S", "H", "A/B", "Give the hero one clear button that leads to your bestsellers or main category.", ["One-button hero linking to bestsellers"]] },
+    { k: "rc_hero_clear", u: "value-prop", t: "HOME", b: ["B65", "B68"], rc: "Intent / Message mismatch", sev: 3, sevf: function (f) { return f.hero_head_words >= 1 && f.hero_head_words <= 17 ? 2 : 3; }, r: "title", s: "First screen doesn't say what you sell", n: "Unclear value proposition up top",
+      ok: function (f) { return f.hero_head_words >= 1 && f.hero_head_words <= 12; }, ev: [function (f) { return f.hero_head_words ? "The first-screen headline runs " + f.hero_head_words + " words; visitors take in about 12 at a glance." : "There is no visible headline on the first screen saying what you sell."; }, "The first screen says what you sell in a short headline."],
+      fx: ["S", "H", "A/B", "Put a one-line promise in the hero: what it is, who it's for, why it's better.", ["One-line value proposition over the hero image"]] },
+    { k: "rc_categories", u: "home-paths", t: "HOME", b: ["B02", "B15"], rc: "Discovery / Navigation", sev: 2, r: "content", s: "Few shopping paths up top", n: "Categories not visible early",
+      ok: function (f) { return (f.category_entries || 0) + Math.min(f.cards_top || 0, 4) >= 2; }, ev: [function (f) { return "Only " + f.category_entries + " category links appear in the first three screens, so shoppers can't see your range."; }, "Shoppers can see your range of categories early."],
+      fx: ["S", "H", "A/B", "Add a shop-by-category row (image tiles) right after the hero covering your main categories.", ["Category tiles row under the hero"]] },
+    { k: "rc_products_soon", u: "home-paths", t: "HOME", b: ["B01", "B68"], rc: "Discovery / Navigation", sev: 2, r: "content", s: "Products appear late", n: "Products appear late on the homepage",
+      ok: function (f) { return f.cards ? f.first_product_screens <= 2.2 : null; }, ev: [function (f) { return "The first product appears about " + f.first_product_screens.toFixed(1) + " screens down."; }, "Products appear early."],
+      fx: ["S", "M", "A/B", "Bring a bestseller row into the first two screens.", ["Bestsellers carousel directly under the hero"]] },
+    { k: "rc_card_price", u: "col-cards", t: "LIST", b: ["B05"], rc: "Offer weakness", sev: 2, r: "content", s: "Product cards without prices", n: "Prices missing on product cards",
+      ok: function (f) { return f.cards >= 3 && f.card_price > 0 ? 0.7 * f.card_price + 0.3 * (f.card_rating || 0) >= 0.5 : null; }, ev: [function (f) { return Math.round((1 - f.card_price) * 100) + "% of product cards don't show a price."; }, "Product cards show prices."],
+      fx: ["S", "M", "Ship", "Show price and MRP on every product card.", ["Price and MRP on all product cards"]] },
+    { k: "rc_card_rating", u: "col-cards", t: "LIST", b: ["B13"], rc: "Trust deficit", sev: 1, r: "content", s: "Product cards without ratings", n: "Ratings missing on product cards",
+      ok: function (f) { return f.cards >= 3 && f.card_price >= 0.5 ? f.card_rating >= 0.5 : null; }, ev: ["Most product cards don't show a star rating and count, which shoppers use to pick what to open.", "Product cards show ratings."],
+      fx: ["S", "M", "A/B", "Show the star average and number of reviews on every product card.", ["Stars and review count on product cards"]] },
+    { k: "rc_home_proof", u: "proof", t: "HOME", b: ["B13", "B04"], rc: "Trust deficit", sev: 2, r: "reviews", s: "No reviews or proof on the homepage", n: "Homepage lacks social proof",
+      ok: function (f) { return !!(f.social_scale || f.testimonials || f.rating_top); }, ev: ["We couldn't find reviews, testimonials or customer numbers on the homepage.", "Social proof is on the homepage."],
+      fx: ["S", "M", "A/B", "Add a reviews strip with real customer quotes and your average rating.", ["Customer reviews strip after bestsellers"]] },
+    { k: "rc_home_trust", u: "trust", t: "HOME", b: ["B08", "B09", "B10"], rc: "Trust deficit", sev: 2, r: "trust", s: "No trust strip on the homepage", n: "Homepage lacks shipping and returns reassurance",
+      ok: function (f) { return f.trust_page >= 3; }, ev: ["The homepage doesn't reassure on shipping, returns and payment.", "Shipping, returns and payment are reassured."],
+      fx: ["S", "M", "A/B", "Add an icon strip under the hero: free shipping, easy returns, COD or secure payment.", ["Trust icon strip under the hero"]] },
+    { k: "rc_search", u: "search", t: "HOME", b: ["B15"], rc: "Discovery / Navigation", sev: 1, r: "nav", s: "No visible search", n: "Search not visible",
+      ok: function (f) { return !!f.search_box; }, ev: ["We couldn't find a search box or search icon in the header.", "Search is available."],
+      fx: ["S", "M", "Ship", "Show a search icon or bar in the mobile header.", ["Search icon in the mobile header"]] },
+    { k: "rc_carousel", t: "HOME", b: ["B67"], rc: "Friction / UX", sev: 1, r: "img", s: "Hero is a rotating carousel", n: "Rotating hero carousel",
+      ok: function (f) { return !f.carousel; }, ev: ["The hero is a rotating carousel; most visitors only take in the first slide.", "The hero is a single focused message."],
+      fx: ["S", "M", "A/B", "Replace the carousel with one hero message, and move other offers into tiles below.", ["Static hero with offer tiles underneath"]] },
+    /* ---------- collection page ---------- */
+    { k: "rc_products_early", u: "col-fold", t: "COLLECTION", b: ["B15", "B01"], rc: "Discovery / Navigation", sev: 3, sevf: function (f) { return (f.cards_atf || 0) === 1 ? 2 : 3; }, r: "content", s: "Products not visible on arrival", n: "Products pushed down by banners",
+      ok: function (f) { return f.cards ? (f.cards_atf || 0) >= 2 : null; }, ev: [function (f) { return (f.cards_atf ? "Only " + f.cards_atf + " product shows" : "No products show") + " on the first phone screen; shoppers came to see products."; }, "Products show on arrival."],
+      fx: ["S", "H", "A/B", "Trim the collection banner on mobile and start the product grid within the first screen, two products per row.", ["Slim collection header and 2-column grid on mobile"]] },
+    { k: "rc_filter", u: "col-filters", t: "COLLECTION", b: ["B15", "B02"], rc: "Discovery / Navigation", sev: 2, r: "nav", s: "No filters or sorting", n: "No way to filter products",
+      ok: function (f) { return f.cards > 12 ? !!(f.filter_ui || f.sort_ui) : null; }, ev: ["With this many products there are no filters or sorting, so shoppers scroll everything.", "Filters or sorting are available."],
+      fx: ["M", "H", "A/B", "Add filters for the attributes shoppers choose by (size, price, type, concern) in a sticky filter button on mobile.", ["Sticky 'Filter' button opening a drawer of category filters"]] },
+    { k: "rc_sort", u: "col-filters", t: "COLLECTION", b: ["B15"], rc: "Discovery / Navigation", sev: 1, r: "nav", s: "No sorting", n: "No sorting options",
+      ok: function (f) { return f.cards > 12 && f.filter_ui ? !!f.sort_ui : null; }, ev: ["We couldn't find sorting by price, rating, bestselling or newest.", "Sorting is available."],
+      fx: ["S", "M", "Ship", "Offer sorting by bestselling, price, rating and newest.", ["Sort by bestselling, price, rating, newest"]] },
+    { k: "rc_card_add", t: "COLLECTION", b: ["B70"], rc: "Friction / UX", sev: 1, r: "content", s: "No quick add on cards", n: "No quick add on product cards",
+      ok: function (f) { return f.cards >= 3 && f.card_price >= 0.5 ? f.card_add >= 0.5 : null; }, ev: ["Shoppers have to open each product to add it; there's no quick add on the cards.", "Cards have quick add."],
+      fx: ["S", "M", "A/B", "Add a quick add button on product cards for single-variant items.", ["Quick add on product cards"]] },
+    { k: "rc_card_swatch", t: "COLLECTION", cats: ["Fashion & Apparel", "Jewellery & Accessories", "Home & Living"], b: ["B15", "B49"], rc: "Discovery / Navigation", sev: 1, r: "content", s: "No colour swatches on cards", n: "Colour options hidden on cards",
+      ok: function (f) { return f.cards >= 3 && f.card_price >= 0.5 ? f.card_swatch >= 0.3 : null; }, ev: ["Product cards don't show colour or finish options, so shoppers miss variants.", "Cards show colour options."],
+      fx: ["S", "M", "A/B", "Show colour swatches on product cards.", ["Swatches under each product card"]] },
+    { k: "rc_count", t: "COLLECTION", b: ["B15"], rc: "Discovery / Navigation", sev: 1, r: "nav", s: "Product count not shown", n: "No product count",
+      ok: function (f) { return !!f.product_count; }, ev: ["The page doesn't show how many products are in the collection.", "The product count is shown."],
+      fx: ["S", "L", "Ship", "Show the number of products next to the collection title.", ["'24 products' next to the title"]] },
+    { k: "rc_coll_desc", t: "COLLECTION", b: ["B02", "B03"], rc: "Clarity failure", sev: 1, r: "title", s: "No collection intro", n: "No collection description",
+      ok: function (f) { return !!f.collection_desc; }, ev: ["There's no short intro telling shoppers who this collection is for.", "A short collection intro is shown."],
+      fx: ["S", "L", "Ship", "Add a one or two line intro under the collection title, and a 'how to choose' link.", ["Short collection intro with a buying-guide link"]] },
+    /* ---------- sign-up sites: fintech, healthtech, services ---------- */
+    { k: "rc_lead_cta", u: "cta-fold", t: "LEAD", b: ["B67", "B65"], rc: "Clarity failure", sev: 3, sevf: function (f) { return f.lead_cta2_found ? 2 : 3; }, r: "cta", s: "No clear action on the first screen", n: "No sign-up, apply or book action on the first phone screen",
+      ok: function (f) { return f.lead_cta2_hidden ? null : !!f.lead_cta2_atf; }, ev: ["On a phone, the first screen has no clear Sign up, Apply or Book button, so visitors have to hunt for the next step.", "A clear action sits on the first screen."],
+      fx: ["S", "H", "A/B", "Put one primary action (Open account, Apply now, Book a consult) under the headline on the first phone screen.", ["One solid primary button under the hero headline", "Repeat the same action as a sticky bar on mobile"]] },
+    { k: "rc_lead_cta_style", u: "cta-strength", t: "LEAD", b: ["B67"], rc: "Clarity failure", sev: 3, sevf: function (f) { return (0.55 * (f.lead_cta2_filled ? Math.max(0, Math.min(1, ((f.lead_cta2_contrast || 1) - 1.25) / 1.75)) : 0.25) + 0.3 * Math.max(0, Math.min(1, ((f.lead_cta2_height || 44) - 26) / 18)) + 0.15 * Math.max(0, Math.min(1, ((f.lead_cta2_width || 0) * 390 - 60) / 96))) < 0.5 ? 3 : 2; }, r: "cta", s: "Main button doesn't stand out", n: "Low-contrast or outlined primary action",
+      ok: function (f) { return f.lead_cta2_atf ? (0.55 * (f.lead_cta2_filled ? Math.max(0, Math.min(1, ((f.lead_cta2_contrast || 1) - 1.25) / 1.75)) : 0.25) + 0.3 * Math.max(0, Math.min(1, ((f.lead_cta2_height || 44) - 26) / 18)) + 0.15 * Math.max(0, Math.min(1, ((f.lead_cta2_width || 0) * 390 - 60) / 96))) >= 0.9 : null; }, ev: ["The main action is outlined or close in colour to the page, so it doesn't read as the next step.", "The main action is a solid, high-contrast button."],
+      fx: ["S", "M", "A/B", "Make the primary action a solid button in your strongest brand colour.", ["Solid, full-width primary button on mobile"]] },
+    { k: "rc_lead_hero", u: "value-prop", t: "LEAD", b: ["B65", "B03"], rc: "Clarity failure", sev: 3, sevf: function (f) { return f.hero_head_words >= 1 && f.hero_head_words <= 17 ? 2 : 3; }, r: "title", s: "Headline doesn't say what you offer", n: "Unclear or overlong first-screen headline",
+      ok: function (f) { return f.hero_head_words >= 1 && f.hero_head_words <= 12; }, ev: ["The first-screen headline is missing, too long or too vague to say what you offer and for whom.", "The headline says what you offer in a few words."],
+      fx: ["S", "H", "A/B", "Lead with a 5 to 12 word headline that names the outcome (for example, Personal loans up to ₹5 lakh in 10 minutes).", ["Outcome-first headline with one supporting line"]] },
+    { k: "rc_lead_how", t: "LEAD", b: ["B11", "B03"], rc: "Clarity failure", sev: 1, r: "content", s: "No 'how it works'", n: "Process not explained",
+      ok: function (f) { return !!f.how_it_works; }, ev: ["Visitors can't see the steps from sign-up to result, which raises effort and doubt.", "A how-it-works section explains the steps."],
+      fx: ["S", "M", "Ship", "Add a 3-step how-it-works strip right after the hero.", ["Three numbered steps with icons and one line each"]] },
+    { k: "rc_lead_proof", u: "proof", t: "LEAD", b: ["B13"], rc: "Trust deficit", sev: 3, r: "reviews", s: "No customer proof", n: "No user numbers, ratings or testimonials",
+      ok: function (f) { return !!(f.stat_claims || f.testimonials || f.app_rating); }, ev: ["We couldn't find user numbers, app ratings or testimonials, so visitors have no sign that others trust you.", "Customer proof is shown."],
+      fx: ["S", "H", "A/B", "Show your strongest proof near the hero: users served, app store rating, and two short testimonials.", ["Proof strip under the hero: users, rating, years", "Two named testimonials with photos"]] },
+    { k: "rc_lead_regulated", u: "trust", t: "LEAD", b: ["B04"], rc: "Trust deficit", sev: 3, r: "trust", s: "No licence or regulation shown", n: "Regulatory or accreditation status not visible",
+      ok: function (f) { return !!f.regulated; }, ev: ["We couldn't find a licence, regulator or accreditation (RBI, SEBI, IRDAI, NABL, HIPAA and similar), which visitors look for before sharing money or health data.", "Licence or regulation is shown."],
+      fx: ["S", "H", "Ship", "State your licence or regulator in the hero or proof strip, with the registration number in the footer.", ["Regulated-by line near the main button", "Registration numbers in the footer"]] },
+    { k: "rc_lead_trust", u: "trust", t: "LEAD", b: ["B04", "B08", "B16"], rc: "Trust deficit", sev: 2, r: "trust", s: "Weak trust signals", n: "Risk reversal, credibility and privacy not covered",
+      ok: function (f) { var need = [f.guarantee || f.faq, f.regulated || f.press || (f.logos_strip || 0) >= 3, f.security]; return need.filter(Boolean).length >= 2; },
+      ev: [function (f) { var miss = []; if (!(f.guarantee || f.faq)) miss.push("what happens if it goes wrong (guarantee or FAQs)"); if (!(f.regulated || f.press || (f.logos_strip || 0) >= 3)) miss.push("credibility (licence, press or partners)"); if (!f.security) miss.push("data privacy"); return "Visitors can't find " + miss.join(", ") + "."; }, "Risk reversal, credibility and privacy are covered."],
+      fx: ["S", "H", "A/B", "Add a trust strip near the main action: licence or regulator, a guarantee or clear FAQ, and one line on data privacy.", ["Trust strip: regulator, guarantee, encryption", "FAQ block answering fees, safety and cancellation"]] },
+    { k: "rc_lead_pricing", t: "LEAD", b: ["B69", "B05"], rc: "Offer weakness", sev: 2, r: "content", s: "Pricing or fees hard to find", n: "No pricing, fees or rates link",
+      ok: function (f) { return !!f.pricing_link; }, ev: ["We couldn't find pricing, fees, charges or interest rates, which makes visitors expect surprises.", "Pricing or fees are easy to find."],
+      fx: ["S", "M", "Ship", "Link to a plain pricing or fees page from the header and near the main button.", ["Pricing link in the header", "Starting-from price next to the main action"]] },
+    { k: "rc_lead_form", u: "form", t: "LEAD", b: ["B70"], rc: "Friction / UX", sev: 2, r: "cta", s: "Long form up front", n: "Too many form fields before value",
+      ok: function (f) { return f.form_fields ? f.form_fields <= 5 : null; }, ev: [function (f) { return "The form asks for " + f.form_fields + " things up front; each extra field loses people."; }, "The form is short."],
+      fx: ["M", "H", "A/B", "Start with just a phone number or email and collect the rest after the first step.", ["Phone-number-first form with OTP", "Progressive steps with a progress bar"]] },
+    { k: "rc_lead_faq", t: "LEAD", b: ["B08", "B03"], rc: "Trust deficit", sev: 1, r: "content", s: "No FAQs", n: "Common doubts not answered",
+      ok: function (f) { return !!f.faq; }, ev: ["There's no FAQ answering the common doubts (eligibility, fees, cancellation, safety).", "FAQs answer common doubts."],
+      fx: ["S", "M", "Ship", "Add 5 to 8 FAQs covering eligibility, fees, timelines, cancellation and data safety.", ["FAQ accordion above the footer"]] },
+  ];
+  var RULE_BY = {}; RULES.forEach(function (r) { RULE_BY[r.k] = r; });
+  RULES.forEach(function (r) { SHORT[r.k] = r.s; REGION_OF[r.k] = r.r; });
+  function ruleApplies(r, type, cat) {
+    if (type === "LEAD") return r.t === "ALL" || r.t === "LEAD";
+    if (r.t === "LEAD") return false;
+    var t = type === "PDP" ? "PDP" : type === "COLLECTION" ? "COLLECTION" : "HOME";
+    var ok = r.t === "ALL" || r.t === t || (r.t === "LIST" && (t === "HOME" || t === "COLLECTION"));
+    if (!ok) return false;
+    if (r.cats && r.cats.indexOf(cat) < 0) return false;
+    return true;
+  }
+  function renderedChecks(f, page) {
+    if (!f) return { checks: [], signals: {} };
+    var type = page && page.lead ? "LEAD" : (page && page.pageType) || "PDP", cat = (page && page.category) || "", out = [], sigs = {};
+    RULES.forEach(function (r) {
+      if (!ruleApplies(r, type, cat)) return;
+      var v; try { v = r.ok(f); } catch (e) { v = null; }
+      if (v === null || v === undefined) return;
+      var e = r.ev[v ? 1 : 0]; e = typeof e === "function" ? e(f) : e;
+      if (v && !e) return;
+      var id = "TC-" + r.k.toUpperCase();
+      out.push({ key: r.k, signal: id, status: v ? "pass" : "fail", evidence: e, confidence: "high", rendered: true, uiux: r.u || null });
+      var sv = r.sev; if (!v && r.sevf) { try { sv = r.sevf(f) || r.sev; } catch (e2) { sv = r.sev; } }
+      sigs[id] = { name: r.n, surface: type, severity: sv, uiux: r.u || null, rootCause: r.rc, barriers: r.b, failureMode: "", fix: { effort: r.fx[0], impact: r.fx[1], testType: r.fx[2], playbook: r.fx[3], solutions: r.fx[4] } };
+    });
+    return { checks: out, signals: sigs };
+  }
+  /* rendered checks replace the code-only versions of the same question */
+  var SUPERSEDED = { pdp_reviews: "rc_proof_none", pdp_sticky: "rc_sticky", pdp_trust: "rc_trust", pdp_ship_returns: "rc_trust", proof_density: "rc_home_proof", hero_single_action: "rc_hero_cta", search: "rc_search", newsletter: "rc_newsletter", cta_competition: "rc_cta_compete", pdp_price: "rc_price_atf", pdp_atc: "rc_cta_atf", pdp_pincode: "rc_delivery" };
+  /* TrooUIUX Scanner rule library: same rule ids and the same severity tiers in both tools (critical/major = high, moderate = medium, minor = low) */
+  var UIUX_SEV = {"cta-fold":"critical","cta-strength":"major","cta-copy":"moderate","cta-compete":"moderate","cta-repeat":"minor","value-prop":"major","proof":"major","trust":"moderate","contact":"minor","form":"moderate","urgency":"minor","capture":"minor","analytics":"moderate","pdp-price":"major","pdp-sticky":"moderate","pdp-gallery":"moderate","pdp-delivery":"moderate","pdp-anchor":"minor","pdp-pay":"minor","pdp-variant":"minor","pdp-benefits":"minor","col-fold":"major","col-cards":"moderate","col-filters":"moderate","col-paging":"minor","cart-express":"major","cart-threshold":"minor","cart-coupon":"minor","art-next":"moderate","home-paths":"moderate","lp-exits":"minor","title":"major","title-dupe":"minor","desc":"moderate","desc-dupe":"minor","h1":"major","hier":"minor","canonical":"moderate","robots":"critical","og":"minor","schema":"moderate","schema-product":"moderate","schema-price":"major","url":"minor","int-links":"moderate","nofollow":"minor","anchors":"minor","kw":"moderate","stuff":"minor","crumbs":"minor","hreflang":"minor","error-page":"critical","words":"moderate","read":"moderate","sent":"minor","para":"minor","measure":"minor","lorem":"critical","broken-img":"major","subheads":"minor","art-meta":"moderate","art-toc":"minor","lang":"moderate","contrast":"major","labels":"major","btn-name":"moderate","link-name":"moderate","link-purpose":"minor","zoom":"major","tabindex":"minor","dup-id":"minor","landmarks":"minor","skip":"minor","aria-hidden":"minor","iframe":"minor","autoplay":"major","alt":"major","focus":"moderate","viewport":"critical","hscroll":"major","tap":"major","font":"minor","ios-zoom":"minor","interstitial":"critical","sticky":"minor","nav":"minor","search":"minor","plugins":"major","ttfb":"moderate","fcp":"moderate","lcp":"major","cls":"major","inp":"moderate","weight":"moderate","requests":"minor","third":"moderate","blocking":"moderate","oversize":"moderate","lazy":"minor","lcp-img":"moderate","dims":"minor","dom":"minor","fonts":"minor","app-dupe":"minor","https":"critical","mixed":"major","doctype":"minor","charset":"minor","favicon":"minor","deprecated":"minor","jslinks":"minor","hash":"minor","noopener":"minor","consent":"minor","tags-dup":"moderate"};
+  var UIUX_TIER = { critical: 3, major: 3, moderate: 2, minor: 1 };
+  var BACKEND_U = { hero_single_action: "value-prop", cta_competition: "cta-compete", cta_copy: "cta-copy", pdp_atc: "cta-fold", pdp_sticky: "pdp-sticky", pdp_price: "pdp-price", pdp_anchor: "pdp-anchor", pdp_reviews: "proof", pdp_trust: "trust", pdp_ship_returns: "trust", pdp_cod: "pdp-pay", pdp_pincode: "pdp-delivery", pdp_emi: "pdp-pay", pdp_variants: "pdp-variant", proof_density: "proof", contact: "contact", live_chat: "contact", search: "search", newsletter: "capture", viewport: "viewport", lang: "lang", pdp_urgency: "urgency" };
+  var PSI_U = { "SIG-ALL-F-SLOWLCP-01": "lcp", "SIG-PERF-F-LCPABOVE25-01": "lcp", "SIG-PERF-F-CLSABOVE01-01": "cls", "SIG-ALL-F-JSBLOCKING-01": "blocking", "SIG-ALL-F-THIRDPARTYAPPDELAY-01": "third", "SIG-PERF-F-TTFBHIGH-01": "ttfb", "SIG-PERF-F-IMAGEFORMATSUBOPTIMAL-01": "oversize", "SIG-PERF-F-FONTLOADINGFOIT-01": "fonts", "SIG-ALL-F-COREWEBVITALS-01": "lcp", "SIG-PERF-F-INPABOVE200-01": "inp", "SIG-A11Y-F-ALTTEXTMISSING-01": "alt", "SIG-A11Y-F-ARIALABELSMISS-01": "btn-name", "SIG-A11Y-F-HEADINGHIERARCHYBROKEN-01": "hier", "SIG-A11Y-F-LANGATTRMISS-01": "lang", "SIG-A11Y-F-LINKTEXTGENERIC-01": "anchors", "SIG-A11Y-F-CONTRASTCTALOW-01": "contrast", "SIG-A11Y-F-CONTRASTTEXTLOW-01": "contrast", "SIG-MOB-F-TOUCHTARGETSIZE-01": "tap", "SIG-MOB-F-VIEWPORTNOTSET-01": "viewport" };
+  function uiuxOf(f) { return f.uiux || BACKEND_U[f.key] || PSI_U[f.signal] || null; }
+  /* The Scanner's analytics rule reads the live page after scripts run; TrooCRO reads page code only, where tracking
+     loaded by scripts (Shopify pixels, tag bundles) can't be seen, so absence is never claimed. */
+  function addStackChecks(r) { return r; }
+  /* Review widgets (Judge.me, Yotpo, Okendo...) draw stars with JavaScript, which our phone render doesn't run.
+     If the store has one, a missing star rating in the render is "can't confirm", never a finding. */
+  var JS_REVIEW_RULES = { rc_rating_top: 1, rc_proof_none: 1, rc_review_volume: 1, rc_photo_reviews: 1, rc_card_rating: 1 };
+  function mergeRendered(r, f) {
+    var rc = renderedChecks(f, r.page || {}); if (!rc.checks.length) return 0;
+    var tools = ((r.stack || {}).tools || []), hasReviewApp = tools.some(function (t) { return t && t.category === "reviews"; });
+    var codePass = {}; (r.checks || []).forEach(function (c) { if (c.status === "pass") codePass[c.key] = 1; });
+    rc.checks = rc.checks.filter(function (c) {
+      if (c.status !== "fail") return true;
+      if (hasReviewApp && JS_REVIEW_RULES[c.key]) return false;
+      /* the code-level check already found it (often drawn by a script): trust that over the render */
+      for (var k in SUPERSEDED) if (SUPERSEDED[k] === c.key && codePass[k]) return false;
+      return true;
+    });
+    /* sign-up sites: drop store-only code checks (search, category paths, product-page checks) */
+    if (r.page && r.page.lead) {
+      var KEEP = { address: 1, contact: 1, policies: 1, live_chat: 1, viewport: 1, lang: 1, founder_story: 1 };
+      r.checks = (r.checks || []).filter(function (c) { return c.rendered || KEEP[c.key] || /^SIG-(MOB|A11Y|SEO|AI|SPD)/.test(c.signal || ""); });
+    }
+    if (!rc.checks.length) return 0;
+    var have = {}; rc.checks.forEach(function (c) { have[c.key] = 1; });
+    r.checks = (r.checks || []).filter(function (c) { return !(SUPERSEDED[c.key] && have[SUPERSEDED[c.key]]); }).concat(rc.checks);
+    r.library = r.library || { signals: {}, barriers: {}, rootCauses: {} };
+    Object.keys(rc.signals).forEach(function (k) { r.library.signals[k] = rc.signals[k]; });
+    return rc.checks.length;
+  }
+
   var THEMES = {
     "Trust deficit": "Shoppers can’t confirm the basics before buying", "Clarity failure": "The next step isn’t obvious",
     "Discovery / Navigation": "Shoppers can’t find their way to the right product", "Friction / UX": "Small frictions slow shoppers down",
@@ -1536,7 +2122,7 @@
   }
   function measureShortOf(f, R) {
     var t = ((f.sig || {}).fix || {}).testType || "A/B";
-    var metric = f.area === "speed" ? "load time" : (R.page && R.page.pageType === "PDP") ? "add-to-cart rate" : "click-through and add-to-cart";
+    var metric = f.area === "speed" ? "load time" : (R.page && R.page.lead) ? "sign-ups or enquiries" : (R.page && R.page.pageType === "PDP") ? "add-to-cart rate" : "click-through and add-to-cart";
     var d = abDays(R);
     if (t === "A/B" && !(d != null && d > 45)) return "A/B test on " + metric + (d != null ? ", about " + Math.max(14, d) + " days" : "");
     return "Ship it and compare " + metric + " before and after";

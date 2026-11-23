@@ -1068,7 +1068,7 @@
     $("[data-s-verdict]").textContent = C.verdict;
     $("[data-s-done]").hidden = false;
     setTimeout(function () { setMiniScore(C.total); }, 60);
-    addFeed("pass", "Report ready", (C.growth ? "Growth score " : "Website score ") + (C.total != null ? C.total + "/100" : "n/a"), "", "plan");
+    addFeed("pass", "Report ready", (C.growth ? "Overall score " : "Website score ") + (C.total != null ? C.total + "/100" : "n/a"), "", "plan");
     S.running = false;
     saveReport();
     var openBtn = $("[data-s-open]");
@@ -1650,15 +1650,17 @@
     return x;
   }
 
-  var LEVER_NAME = { convert: "Convert", land: "Land (speed)", trust: "Trust", discover: "Discover (search, AI)", aov: "Order value", retain: "Retain" };
+  var LEVER_NAME = { clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", flow: "Focus & flow", speed: "Speed on phone", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
+  var PILLAR_WHAT = { clarity: "What it is, who it suits, what it does", trust: "Reviews, returns, proof, and no contradictions", price: "Total cost, delivery date, COD/UPI, offer", flow: "Layout on a phone, ad match, accessibility", speed: "Core Web Vitals and PageSpeed on a phone", discover: "Brings visitors, doesn't convert them", aov: "Grows the order after the decision", retain: "Happens after the first order" };
   function compute(R) {
     var areas = [];
     rescore(R);
-    if (R.growth && R.growth.score != null) {
+    if (R.growth && R.growth.score != null && R.growth.parts) {
       var G = R.growth, gt = G.score;
-      G.scoreParts.forEach(function (p) { areas.push({ key: p.id, name: LEVER_NAME[p.id] || p.id, w: p.w, v: p.v, est: p.est, src: p.id === "convert" ? "Buyer questions " + (G.qScore != null ? G.qScore : "n/a") + "/100 (60%) and page layout " + (G.layout != null ? G.layout : "n/a") + "/100 (40%)" : "" }); });
+      G.parts.forEach(function (p) { areas.push({ key: p.id, name: LEVER_NAME[p.id] || p.id, w: p.w, v: p.v, est: p.est, grp: p.grp, src: PILLAR_WHAT[p.id] || "" }); });
+      (G.side || []).forEach(function (p) { areas.push({ key: p.id, name: LEVER_NAME[p.id] || p.id, w: 0, v: p.v, side: true, src: PILLAR_WHAT[p.id] || "" }); });
       var gv = gt >= 80 ? "Strong. Small gains left." : gt >= 65 ? "Good, with clear room to grow." : gt >= 45 ? (G.lead ? "Average. Sign-ups are slipping away." : "Average. Real sales are slipping away.") : (G.lead ? "Needs work. Visitors are hitting walls." : "Needs work. Shoppers are hitting walls.");
-      return { areas: areas, total: gt, est: G.scoreParts.some(function (p) { return p.est; }), verdict: gv, growth: true };
+      return { areas: areas, total: gt, cro: G.cro, speed: G.speed, croW: G.croW, speedW: G.speedW, est: G.parts.some(function (p) { return p.est; }), verdict: gv, growth: true };
     }
     if (R.cro && R.cro.score != null) {
       var ps3 = R.psi && R.psi.scores ? R.psi.scores : null, realSpeed = ps3 && ps3.performance != null;
@@ -1800,6 +1802,34 @@
     return '<div class="rp-sec-head"><span class="eyebrow">' + esc(eyebrow) + '</span><h2 class="h2">' + title + "</h2>" + (sub ? '<p class="an-sub">' + sub + "</p>" : "") + "</div>";
   }
 
+  /* v11.3: Overall = CRO x Speed (weighted geometric mean), with the weights in a dropdown under the score */
+  function rpWeights(R, C) {
+    var G = R.growth, A = C.areas;
+    function tile(nm, v, w, est, cls) {
+      return '<div class="rp-sub ' + cls + '"><span class="nm">' + esc(nm) + (est ? "<em>est.</em>" : "") + '</span><div class="v"><b>' + (v == null ? "n/a" : v) + "</b><span>/100</span></div>" +
+        '<span class="bar"><i style="width:' + (v || 0) + "%;background:" + colorFor(v) + '"></i></span><span class="w">' + (w != null ? w + "% of the overall score" : "not measured") + "</span></div>";
+    }
+    var cro = A.filter(function (a) { return a.grp === "cro"; }), sp = A.filter(function (a) { return a.grp === "speed"; }), side = A.filter(function (a) { return a.side; });
+    function row(a) { return '<tr><td><span class="pn">' + esc(a.name) + (a.est ? "<em>est.</em>" : "") + '</span><span class="pw">' + esc(a.src) + '</span></td><td class="pv" style="color:' + colorFor(a.v) + '">' + (a.v == null ? "n/a" : a.v) + '</td><td class="pc">' + (a.side ? "–" : a.w != null ? a.w + "%" : "") + "</td></tr>"; }
+    /* speed is one pillar, so show what it is made of instead of repeating it */
+    var SB = (G.branches && G.branches.speed) || {}, half = C.speedW != null ? Math.round(C.speedW * 5) / 10 : null;
+    var spRows = SB.est || SB.perf == null ? [{ name: "Estimated from the page's code", src: "Google PageSpeed didn't answer in time, so we read the page's size and scripts", v: C.speed, w: C.speedW, est: true }]
+      : SB.cwv == null ? [{ name: "Google PageSpeed (mobile)", src: "Lighthouse on a mid-range phone", v: SB.perf, w: C.speedW }]
+      : [{ name: "Core Web Vitals", src: "Main image time, blocked time and layout shift, against Google's thresholds", v: SB.cwv, w: half }, { name: "Google PageSpeed (mobile)", src: "Lighthouse on a mid-range phone", v: SB.perf, w: half }];
+    if (SB.capped) spRows.push({ name: "Capped at 50", src: "Google's real-user data rates this page slow", v: 50, w: null });
+    var h = '<div class="rp-subs">' + tile("CRO score", C.cro, C.croW, false, "cro") + tile("Speed score", C.speed, C.speedW, sp.some(function (a) { return a.est; }), "spd") + "</div>";
+    h += '<details class="rp-how rp-wt"><summary>How this score is weighted</summary><table class="rp-wtab"><thead><tr><th>Pillar</th><th>Score</th><th>Weight</th></tr></thead><tbody>';
+    h += '<tr class="grp"><td>CRO score</td><td class="pv">' + (C.cro == null ? "n/a" : C.cro) + '</td><td class="pc">' + (C.croW != null ? C.croW + "%" : "") + "</td></tr>" + cro.map(row).join("");
+    h += '<tr class="grp"><td>Speed score</td><td class="pv">' + (C.speed == null ? "n/a" : C.speed) + '</td><td class="pc">' + (C.speedW != null ? C.speedW + "%" : "") + "</td></tr>" + (sp.length ? spRows.map(row).join("") : "");
+    if (side.length) h += '<tr class="grp side"><td colspan="3">Shown, not counted in the score</td></tr>' + side.map(row).join("");
+    h += "</tbody></table>";
+    var a = C.croW != null ? (C.croW / 100).toFixed(2) : "0.85", b = C.speedW != null ? (C.speedW / 100).toFixed(2) : "0.15";
+    h += "<p>" + esc("Why these weights: research on what makes online shoppers buy finds that clear product information and trust predict purchase best, hidden costs and slow delivery are the top reasons carts are abandoned, and phone speed moves conversion. The overall score is a weighted geometric mean, so one weak pillar pulls it down instead of being averaged away:") +
+      ' <span class="rp-formula">Overall = CRO<sup>' + a + "</sup> × Speed<sup>" + b + "</sup></span>. " +
+      esc("Buyer questions count by how much they matter to " + (G.cat && G.cat !== "Other" ? G.cat.toLowerCase() + " " : "") + "shoppers, and a partly answered one counts 30%." + (G.mustNo ? " " + G.mustNo + " Must-solve " + (G.mustNo === 1 ? "question is" : "questions are") + " unanswered on this page." : "") + (G.lead ? " This is a sign-up page, so price questions count under Clarity." : "") + " Search and AI, basket size and repeat orders are in the growth plan below, not in this score: they bring visitors or grow later orders.") + "</p></details>";
+    return h;
+  }
+
   function renderReport(R, opts) {
     opts = opts || {};
     var L = R.lib || { signals: {}, barriers: {}, rootCauses: {} };
@@ -1827,14 +1857,15 @@
     var shot = R.psi && R.psi.shots && R.psi.shots.final;
     var og = /^https:\/\//i.test(P.ogImage || "") ? P.ogImage : "";
     h += '<section class="rp-hero" id="rp-overview">';
-    h += '<div class="rp-score"><div class="rp-score-top">' + ringSvg(C.total) + '<div><span class="an-label">' + (C.growth ? "Growth score" : "Website score") + '</span><div class="rp-verdict">' + esc(C.verdict) + '</div><p class="an-sub">Across the areas we could measure on this page.' + (C.est ? " Speed and accessibility are estimated." : "") + "</p></div></div>";
-    h += '<div class="rp-kpis"><div><b>' + F.length + "</b><span>" + (F.length === 1 ? "issue" : "issues") + ' costing sales</span></div><div><b>' + nBar + "</b><span>buyer " + (nBar === 1 ? "barrier" : "barriers") + ' triggered</span></div><div><b>' + T.length + "</b><span>" + (T.length === 1 ? "test" : "tests") + " ready to run</span></div></div>";
-    h += '<div class="rp-areas">' + C.areas.map(function (a) {
+    h += '<div class="rp-score"><div class="rp-score-top">' + ringSvg(C.total) + '<div><span class="an-label">' + (C.growth ? "Overall score" : "Website score") + '</span><div class="rp-verdict">' + esc(C.verdict) + '</div><p class="an-sub">' + (C.growth ? "This page only, for a shopper who is already on it." : "Across the areas we could measure on this page.") + (C.est ? " Speed is estimated." : "") + "</p></div></div>";
+    if (C.growth) h += rpWeights(R, C);
+    var kpis = '<div class="rp-kpis"><div><b>' + F.length + "</b><span>" + (F.length === 1 ? "issue" : "issues") + ' costing sales</span></div><div><b>' + nBar + "</b><span>buyer " + (nBar === 1 ? "barrier" : "barriers") + ' triggered</span></div><div><b>' + T.length + "</b><span>" + (T.length === 1 ? "test" : "tests") + " ready to run</span></div></div>";
+    h += kpis;
+    if (!C.growth) h += '<div class="rp-areas">' + C.areas.map(function (a) {
       return '<div class="rp-area' + (a.ctx ? " ctx" : "") + (a.v == null ? " na" : "") + '" title="' + esc(a.src) + '"><span class="nm">' + esc(a.name) + (a.est && a.v != null ? "<em>est.</em>" : "") + '</span><span class="bar"><i style="width:' + (a.v || 0) + "%;background:" + colorFor(a.v) + '"></i></span><b>' + (a.v == null ? "n/a" : a.v) + '</b><span class="w">' + (a.w ? a.w + "%" : "info") + "</span></div>";
     }).join("") + "</div>";
     if (C.growth) {
-      var Gs = R.growth;
-      h += '<details class="rp-how"><summary>How the score works</summary><p>' + esc("Your Growth score is about this page only. Convert counts 35% (whether the page answers the doubts " + (Gs.cat && Gs.cat !== "Other" ? Gs.cat.toLowerCase() + " " : "") + "shoppers have before paying: 60%, and how the page is laid out on a phone, benchmarked on 570+ sites: 40%). Land (Google PageSpeed on mobile and desktop, plus ad match) counts 20%, Trust 15%, Discover (search and AI) 15%, Order value 7.5% and Retain 7.5%." + (Gs.penalty ? " Each Must-solve question the page leaves unanswered takes off 3 points; " + Gs.mustNo + " " + (Gs.mustNo === 1 ? "question costs" : "questions cost") + " " + Gs.penalty + " here." : "") + " A partly answered question counts 30% of a full answer.") + "</p></details>";
+      h += "</div>";
     } else if (C.v3) {
       var LBL = R.cro.kind === "rubric" || R.cro.kind === "blend" ? RUBRIC_LABEL : CRO_LABEL;
       var up = (R.cro.up || []).map(function (k) { return "<li class=\"up\">" + esc(LBL[k] || k) + "</li>"; }).join("");
@@ -2492,7 +2523,7 @@
     var C = out.C, lines = [];
     var hh = hostOf(R.url) || R.host;
     lines.push("---", 'title: "TrooCRO website analysis for ' + hh + '"', "format: agent view of this page (the same facts as the page, as text)", "---", "");
-    lines.push("# Website analysis for " + hh, "", (C.growth ? "Growth score: " : "Website score: ") + (C.total != null ? C.total + "/100" : "not enough to score") + (C.est ? " (partly estimated)" : "") + ". " + C.verdict, "");
+    lines.push("# Website analysis for " + hh, "", (C.growth ? "Overall score: " : "Website score: ") + (C.total != null ? C.total + "/100" : "not enough to score") + (C.growth ? " (CRO " + (C.cro != null ? C.cro : "n/a") + "/100, " + C.croW + "%; speed " + (C.speed != null ? C.speed : "n/a") + "/100, " + C.speedW + "%)" : "") + (C.est ? " (partly estimated)" : "") + ". " + C.verdict, "");
     lines.push("## Area scores");
     C.areas.forEach(function (a) { lines.push("- " + a.name + ": " + (a.v != null ? a.v + "/100" : "not measured") + " (" + (a.w ? a.w + "% of score" : "not scored") + "; " + a.src + ")"); });
     lines.push("", "## Findings, by priority");

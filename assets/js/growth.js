@@ -84,6 +84,14 @@
 
   /* ---------------- buyer questions: the category's barrier library, graded on the page ---------------- */
   var GSCORE = { yes: 1, partly: 0.3, no: 0 };
+  /* v11.3 pillars. Each library question goes to a pillar by its root cause; a few are moved where the research puts them
+     (total cost, delivery and payment sit with price: Baymard's top abandonment reasons). */
+  var RC_GRP = { "Clarity failure": "clarity", "Desire deficit": "clarity", "Trust deficit": "trust", "Offer weakness": "price", "Urgency deficit": "price", "Friction / UX": "flow", "Intent / Message mismatch": "flow", "Discovery / Navigation": "flow" };
+  var ID_GRP = { B69: "price", B09: "price", B10: "price", B50: "trust", B19: "clarity", B21: "clarity", B25: "clarity", B58: "clarity", B17: "clarity", B15: "clarity" };
+  function grpOf(b) { return ID_GRP[b.id] || RC_GRP[b.rc] || "clarity"; }
+  /* weight floors from the research: delivery is the #2 abandonment reason, reviews lift purchase likelihood the most,
+     and payment options (COD, UPI) matter more in India. Floors only raise a weight, never lower it. */
+  function wFloor(id, mk) { return ({ B09: 7, B13: 8 })[id] || (id === "B10" && mk === "IN" ? 6 : 0); }
   function checksByBarrier(R) {
     var L = (R.lib && R.lib.signals) || {}, map = {};
     (R.checks || []).forEach(function (c) {
@@ -111,7 +119,7 @@
     rows.forEach(function (b) {
       var T = FOOTER[b.id] ? Tall : Tmain;
       if (LIB.needs[b.id] && !new RegExp(LIB.needs[b.id], "i").test(Tmain)) return;
-      var q = { id: b.id, q: b.q, p: b.p, w: b.w, fix: b.good, ev: [], src: "lib", tag: "seen" };
+      var q = { id: b.id, q: b.q, p: b.p, w: Math.max(b.w, wFloor(b.id, ctx.mk)), fix: b.good, ev: [], src: "lib", tag: "seen", grp: grpOf(b) };
       if (LIB.confirm[b.id]) {
         q.g = "confirm"; q.tag = "confirm"; q.note = LIB.confirm[b.id];
         if (b.id === "B70" && apps.checkout.length) { q.g = "partly"; q.tag = "seen"; q.ev.push("One-tap checkout app installed: " + apps.checkout.join(", ") + ". Check the steps after it."); }
@@ -162,7 +170,7 @@
     return ins.questions.map(function (x, i) {
       var hits = (x.look_for || []).filter(function (k) { return T.indexOf(k) >= 0; });
       var g = x.answer ? "yes" : hits.length >= 2 ? "partly" : "no";
-      return { id: "P" + (i + 1), q: x.q, p: "must", w: 8, g: g, why: x.why, src: "product", tag: "seen",
+      return { id: "P" + (i + 1), q: x.q, p: "must", w: 8, g: g, why: x.why, src: "product", tag: "seen", grp: "clarity",
         ev: x.answer ? ["The page says: “" + clip(x.answer, 140) + "”"] : hits.length ? ["The page mentions " + hits.slice(0, 3).join(", ") + " but doesn't answer it directly."] : ["Not answered on the page."],
         fix: x.answer ? "" : "Answer it near the price in one short line, in the shopper's words." };
     });
@@ -217,10 +225,11 @@
     return { score: seo != null ? Math.round(0.7 * base + 0.3 * seo) : base, items: items, note: "This page only: title, description, schema, headings, and whether Google and AI assistants can read it." + (seo != null ? " Google's SEO score for this page: " + seo + "/100." : "") };
   }
 
-  /* Land: does the page load fast and match what brought the visitor? */
-  function land(R, ctx) {
+  /* Speed on phone: Core Web Vitals against Google's thresholds (half) and the Lighthouse mobile score (half).
+     Google's real-user data, when it says slow, caps the score at 50. Desktop isn't counted: shoppers are on phones. */
+  function band(v, good, poor) { if (v == null || !isFinite(v)) return null; if (v <= good) return 100; if (v <= poor) return Math.round(100 - 50 * (v - good) / (poor - good)); return Math.max(0, Math.round(50 - 50 * (v - poor) / poor)); }
+  function speed(R, ctx) {
     var p = R.psi, items = [];
-    if (ctx.adMatch && ctx.adMatch.g !== "yes") items.push(item("admatch", "The page doesn't match your ad", ctx.adMatch.g === "no" ? "bad" : "warn", ctx.adMatch.ev, "Repeat the ad's promise in the first headline and show the same product and offer.", "seen", 3));
     if (!p || !p.scores || p.scores.performance == null) {
       var lt = R.lite || {};
       if (lt.speedEstimate != null && lt.speedEstimate < 60) items.push(item("speed_est", "The page looks heavy", "warn", (lt.htmlKb || "?") + " KB of HTML and " + (lt.scripts || "?") + " scripts.", "Run a full speed audit.", "estimate", 2));
@@ -235,12 +244,14 @@
     if (tp.length) items.push(item("apps", "Apps slowing the page", "warn", tp.map(function (x) { return x.name + " (" + x.blockingMs + "ms)"; }).join(", ") + ".", "Load these after the page is usable, or remove the ones you don't use.", "seen", 2));
     if (p.field && p.field.overall === "SLOW") items.push(item("field", "Real Chrome users rate the site slow", "bad", "Google's real-user data (last 28 days) marks this " + (p.field.originFallback ? "site" : "page") + " as slow.", "Fix the main image and scripts first; field data updates over 28 days.", "seen", 3));
     if (m.weightKb && m.weightKb > 3500) items.push(item("weight", "The page is heavy", "warn", "About " + (m.weightKb / 1024).toFixed(1) + " MB to download on a phone.", "Compress images and drop unused apps.", "seen", 1));
-    var a11y = p.scores.accessibility;
-    if (a11y != null && a11y < 80) items.push(item("a11y", "Hard to use for some shoppers", "warn", "Accessibility " + a11y + "/100 (Google Lighthouse): contrast, labels or tap targets.", "Fix contrast and add labels to icon buttons.", "seen", 1));
     var mob = p.scores.performance, desk = d && d.scores ? d.scores.performance : null;
-    var score = Math.round(0.7 * mob + 0.1 * (desk != null ? desk : mob) + 0.2 * (a11y != null ? a11y : 80));
-    if (ctx.adMatch && ctx.adMatch.g === "no") score = Math.max(0, score - 15);
-    return { score: score, items: items, note: "Google PageSpeed for this page on a mid-range phone: " + mob + "/100" + (desk != null ? "; desktop " + desk + "/100" : "") + "." };
+    var cwv = avg([band(lcp, 2.5, 4), band(m.tbt, 200, 600), band(m.cls, 0.1, 0.25)]);
+    var score = cwv == null ? mob : Math.round(0.5 * mob + 0.5 * cwv);
+    var slow = p.field && p.field.overall === "SLOW";
+    var capped = slow && score > 50;
+    if (slow) score = Math.min(score, 50);
+    return { score: score, items: items, perf: mob, cwv: cwv == null ? null : Math.round(cwv), capped: capped,
+      note: "On a mid-range phone: Google PageSpeed " + mob + "/100, Core Web Vitals " + (cwv == null ? "n/a" : Math.round(cwv) + "/100") + " (main image " + (lcp != null ? lcp.toFixed(1) + "s" : "n/a") + ", blocked " + (m.tbt != null ? Math.round(m.tbt) + "ms" : "n/a") + ", layout shift " + (m.cls != null ? m.cls.toFixed(2) : "n/a") + ")." + (slow ? " Google's real-user data says slow, so this is capped at 50." : "") + (desk != null ? " Desktop " + desk + "/100, shown only." : "") };
   }
 
   /* Trust: does anything on the page undercut itself? */
@@ -266,7 +277,8 @@
     var rated = (R.page && R.page.rating && R.page.rating.value) || (t.reviews && t.reviews.schema && t.reviews.schema.value);
     if (!rated && !apps.reviews.length) items.push(R.page && R.page.lead ? item("no_reviews", "No ratings in the page data", "warn", "We didn't find a rating that search engines and AI assistants can read.", "Show app-store ratings or user numbers near the sign-up button, with rating schema.", "seen", 1) : item("no_reviews", "No reviews on the page", "bad", "No star rating in the page data and no reviews app installed.", "Add a reviews app and show stars near the price.", "seen", 3));
     else if (!rated && apps.reviews.length) items.push(item("reviews_js", "Reviews load late", "confirm", apps.reviews.join(", ") + " draws reviews with JavaScript, so search engines and slow phones may not see them.", "Turn on the app's schema or server-rendered stars.", "confirm", 1));
-    var score = scoreItems(items.filter(function (i) { return i.st !== "confirm"; }));
+    var INTEG = { contra: 1, contra_exc: 1, contra_ai: 1, fake_urgency: 1, numbers: 1, returns_scope: 1 };
+    var score = ctx.trust ? scoreItems(items.filter(function (i) { return i.st !== "confirm" && INTEG[i.k]; })) : null;
     return { score: score, items: items, note: (f.policies || []).length ? "We read " + f.policies.length + " policy " + (f.policies.length === 1 ? "page" : "pages") + " and compared them with the page." : "" };
   }
 
@@ -334,15 +346,17 @@
     return { visitors: visitors, cvr: cvr, aov: aov || null, cur: cur, rev: rev, src: { visitors: vSrc, cvr: cSrc, aov: aSrc }, bench: b ? { category: b.category, band: b.band } : null };
   }
   var LEVERS = [
-    ["discover", "Discover", "More people find you on Google and in AI answers"],
-    ["land", "Land", "Visitors stay because the page loads fast and matches the ad"],
-    ["convert", "Convert", "The page answers buyers' doubts"],
-    ["trust", "Trust", "Nothing on the page makes shoppers doubt you"],
-    ["aov", "Order value", "Bigger baskets"],
-    ["retain", "Retain", "First-time buyers come back"],
+    ["clarity", "Clarity & fit", "Shoppers understand the product and that it suits them"],
+    ["trust", "Trust & risk", "Shoppers feel safe buying from you"],
+    ["price", "Price, delivery & payment", "Shoppers see the full price, delivery date and how to pay"],
+    ["speed", "Speed on phone", "The page loads fast on a phone"],
+    ["flow", "Focus & flow", "Nothing distracts from buying, and the page matches the ad"],
+    ["discover", "Search & AI", "More people find you on Google and in AI answers"],
+    ["aov", "Basket size", "Bigger baskets"],
+    ["retain", "Repeat orders", "First-time buyers come back"],
   ];
-  var GOAL_W = { conversion: { convert: 1.3, trust: 1.2, land: 1.1 }, aov: { aov: 1.5, convert: 1.1 }, ads: { land: 1.35, convert: 1.2 }, speed: { land: 1.5 }, ai: { discover: 1.6 }, repeat: { retain: 1.5, trust: 1.1 } };
-  var TRAFFIC_W = { ads: { land: 1.25, convert: 1.1 }, search: { discover: 1.25 }, social: { land: 1.15, trust: 1.15 }, mix: {} };
+  var GOAL_W = { conversion: { clarity: 1.3, trust: 1.2, price: 1.15, speed: 1.1 }, aov: { aov: 1.5, price: 1.1, clarity: 1.05 }, ads: { speed: 1.35, flow: 1.25, clarity: 1.15 }, speed: { speed: 1.5 }, ai: { discover: 1.6 }, repeat: { retain: 1.5, trust: 1.1 } };
+  var TRAFFIC_W = { ads: { speed: 1.25, flow: 1.2 }, search: { discover: 1.25 }, social: { speed: 1.15, trust: 1.15, clarity: 1.1 }, mix: {} };
   function levers(B, money, inputs, season) {
     var g = GOAL_W[inputs.goal] || GOAL_W.conversion, tw = TRAFFIC_W[inputs.traffic] || {}, reach = REACH[inputs.traffic] || 0.35;
     return LEVERS.map(function (l) {
@@ -350,8 +364,8 @@
       var share = l[0] === "discover" ? reach : 1;
       var inr10 = money.rev != null ? money.rev * share * 0.1 : null;
       var room = 100 - br.score;
-      var sw = season && season.festive ? ({ aov: 1.2, land: 1.1 })[l[0]] || 1 : 1;
-      var conf = ({ discover: 1, land: 1, convert: 1, trust: 0.9, aov: 0.6, retain: 0.65 })[l[0]];
+      var sw = season && season.festive ? ({ aov: 1.2, speed: 1.1, price: 1.05 })[l[0]] || 1 : 1;
+      var conf = ({ clarity: 1, trust: 0.9, price: 0.9, speed: 1, flow: 0.8, discover: 1, aov: 0.6, retain: 0.65 })[l[0]];
       var pr = (inr10 != null ? inr10 : 1) * (room / 100 + 0.12) * (g[l[0]] || 1) * (tw[l[0]] || 1) * sw * conf;
       return { id: l[0], name: l[1], what: l[2], score: br.score, room: room, inr10: inr10, share: share, pr: pr };
     }).filter(Boolean).sort(function (a, b) { return b.pr - a.pr; }).map(function (l, i) { l.rank = i + 1; return l; });
@@ -398,6 +412,7 @@
     var co = catOf(R, ctx), cat = co.cat, catSrc = co.src;
     var sub = subOf(cat, [P.title, ctx.text.h1, prod.title, prod.type, (prod.tags || []).join(" "), (P.h1 || []).join(" ")].join(" ") + " " + ctx.text.main.slice(0, 3000));
     var mk = marketOf(R), season = seasonOf(mk);
+    ctx.mk = mk;
     ctx.season = season;
     ctx.adMatch = adMatchOf(I.ad, R, ctx.text); ctx.traffic = I.traffic || "";
     var lead = !!P.lead;
@@ -406,34 +421,63 @@
     var pq = gradeProduct(ctx.insight, ctx);
     var money = moneyOf(R, cat);
     if (lead && !(+I.aov)) { money.aov = null; money.rev = null; }
-    var B = {};
-    B.discover = discover(R, ctx);
-    B.land = land(R, ctx);
-    var all = pq.concat(qs).filter(function (q) { return q.g !== "confirm"; });
-    var wsum = all.reduce(function (s, q) { return s + q.w; }, 0), qscore = wsum ? Math.round(100 * all.reduce(function (s, q) { return s + q.w * GSCORE[q.g]; }, 0) / wsum) : null;
+    var B = {}, all = pq.concat(qs);
+    if (lead) all.forEach(function (q) { if (q.grp === "price") q.grp = "clarity"; });
+    var graded = all.filter(function (q) { return q.g !== "confirm" && GSCORE[q.g] != null; });
+    function qsc(a) { var ws = a.reduce(function (s, q) { return s + q.w; }, 0); return ws ? Math.round(100 * a.reduce(function (s, q) { return s + q.w * GSCORE[q.g]; }, 0) / ws) : null; }
+    function qOf(grp) { return qsc(graded.filter(function (q) { return q.grp === grp; })); }
+    function qItems(grp, n, skip) {
+      skip = skip || {};
+      var bad = all.filter(function (q) { return q.grp === grp && (q.g === "no" || q.g === "partly") && !skip[q.id]; }).sort(function (a, b) { return (b.w * (b.g === "no" ? 2 : 1)) - (a.w * (a.g === "no" ? 2 : 1)); }).slice(0, n)
+        .map(function (q) { return item("q_" + q.id, q.q, q.g === "no" ? "bad" : "warn", q.ev[0] || "", q.fix, q.tag, q.p === "must" ? 3 : 2); });
+      var ok = all.filter(function (q) { return q.grp === grp && q.g === "yes"; }).map(function (q) { return item("q_" + q.id, q.q, "ok", q.ev[0] || "", "", q.tag, 1); });
+      return bad.concat(ok);
+    }
+    var qscore = qsc(graded);
     var croS = R.cro && R.cro.score != null ? R.cro.score : null;
-    B.convert = { score: qscore == null ? croS : croS == null ? qscore : Math.round(0.6 * qscore + 0.4 * croS), items: [], note: (qscore != null ? "Buyer questions answered: " + qscore + "/100" : "") + (croS != null ? (qscore != null ? ". " : "") + "Page layout benchmark: " + croS + "/100" : "") + "." };
-    pq.concat(qs).filter(function (q) { return q.g === "no" || q.g === "partly"; }).sort(function (a, b) { return (b.w * (b.g === "no" ? 2 : 1)) - (a.w * (a.g === "no" ? 2 : 1)); }).slice(0, 5).forEach(function (q) {
-      B.convert.items.push(item("q_" + q.id, q.q, q.g === "no" ? "bad" : "warn", q.ev[0] || "", q.fix, q.tag, q.p === "must" ? 3 : 2));
-    });
-    B.trust = trust(R, ctx, qs);
+    B.discover = discover(R, ctx);
+    /* Clarity & fit: does the page answer what the product is, who it suits and what it does? */
+    B.clarity = { score: qOf("clarity"), items: qItems("clarity", 5), note: "Buyer questions about what the product is, who it suits and what it does" + (pq.length ? ", including questions written for this product" : "") + "." };
+    /* Trust & risk: proof found (70%) and whether the page contradicts itself (30%) */
+    var TR = trust(R, ctx, qs), tq = qOf("trust"), codFee = TR.items.filter(function (i) { return i.k === "cod_fee"; });
+    var hasI = function (k) { return TR.items.some(function (i) { return i.k === k; }); };
+    B.trust = { score: tq == null ? TR.score : TR.score == null ? tq : Math.round(0.7 * tq + 0.3 * TR.score), integ: TR.score, q: tq,
+      items: TR.items.filter(function (i) { return i.k !== "cod_fee"; }).concat(qItems("trust", 4, { B13: hasI("no_reviews") ? 1 : 0, B08: hasI("no_policy") ? 1 : 0 })),
+      note: "Proof on the page (reviews, returns, authenticity" + (TR.score != null ? "): " + (tq == null ? "n/a" : tq + "/100") + ", 70%. Page and policies agreeing with each other: " + TR.score + "/100, 30%." : ").") + (TR.note ? " " + TR.note : "") };
+    /* Price, delivery & payment: total cost, delivery date, payment options and the offer, before checkout */
+    var pqs = qOf("price");
+    B.price = { score: pqs == null ? null : Math.max(0, pqs - (codFee.length ? 8 : 0)), items: codFee.concat(qItems("price", 5)), note: "Whether shoppers see the full price, delivery date, payment options and offer before checkout." + (codFee.length ? " A hidden COD charge takes off 8." : "") };
+    /* Speed on phone */
+    B.speed = speed(R, ctx);
+    /* Focus & flow: layout benchmark (50%), path-to-buy questions incl. ad match (35%), accessibility (15%) */
+    var fq = qOf("flow"), a11y = R.psi && R.psi.scores ? R.psi.scores.accessibility : null, fItems = qItems("flow", 4);
+    if (ctx.adMatch && ctx.adMatch.g !== "yes" && !fItems.some(function (i) { return i.k === "q_B65"; })) fItems.unshift(item("admatch", "The page doesn't match your ad", ctx.adMatch.g === "no" ? "bad" : "warn", ctx.adMatch.ev, "Repeat the ad's promise in the first headline and show the same product and offer.", "seen", 3));
+    if (a11y != null && a11y < 80) fItems.push(item("a11y", "Hard to use for some shoppers", "warn", "Accessibility " + a11y + "/100 (Google Lighthouse): contrast, labels or tap targets.", "Fix contrast and add labels to icon buttons.", "seen", 1));
+    var fp = [[croS, 0.5], [fq, 0.35], [a11y, 0.15]].filter(function (x) { return x[0] != null; }), fw = fp.reduce(function (s, x) { return s + x[1]; }, 0);
+    B.flow = { score: fw ? Math.round(fp.reduce(function (s, x) { return s + x[0] * x[1]; }, 0) / fw) : null, items: fItems,
+      note: "Page layout on a phone, benchmarked: " + (croS == null ? "n/a" : croS + "/100") + ". Path-to-buy questions: " + (fq == null ? "n/a" : fq + "/100") + ". Accessibility: " + (a11y == null ? "n/a" : a11y + "/100") + "." };
     if (!lead) { B.aov = orderValue(R, ctx, money, cat); B.retain = retain(R, ctx, cat); }
     var L = levers(B, money, I, season);
-    /* the headline Growth score: barrier-led, from the six levers, minus 3 for each Must-solve question the page
-       leaves unanswered (up to 15) */
-    var WTS = { convert: 35, land: 20, trust: 15, discover: 15, aov: 7.5, retain: 7.5 }, tw = 0, tv = 0, parts = [];
-    Object.keys(WTS).forEach(function (k) { var b = B[k]; if (b && b.score != null) { tw += WTS[k]; tv += WTS[k] * b.score; parts.push({ id: k, w: WTS[k], v: b.score, est: !!b.est }); } });
-    var mustNo = pq.concat(qs).filter(function (q) { return q.g === "no" && q.p === "must"; }).length;
-    var penalty = Math.min(15, 3 * mustNo);
-    var gscore = tw ? Math.max(0, Math.round(tv / tw - penalty)) : null;
+    /* The headline: a weighted geometric mean of the five pillars (each floored at 5), so one weak pillar pulls the whole
+       score down instead of being averaged away (OECD/JRC guidance on composite scores). CRO = the four page pillars;
+       because the mean is geometric, Overall = CRO^0.85 x Speed^0.15 exactly. Search & AI, basket and repeat are shown
+       beside the score, not in it: they bring visitors or grow later orders, they don't convert this visit. */
+    var PW = { clarity: 30, trust: 25, price: 20, flow: 10, speed: 15 }, CRO_K = ["clarity", "trust", "price", "flow"];
+    function gmean(keys) { var tw = 0, tl = 0; keys.forEach(function (k) { var b = B[k]; if (b && b.score != null) { tw += PW[k]; tl += PW[k] * Math.log(Math.max(5, b.score)); } }); return tw ? { v: Math.round(Math.exp(tl / tw)), w: tw } : null; }
+    var gAll = gmean(CRO_K.concat(["speed"])), gCro = gmean(CRO_K), gSp = gmean(["speed"]);
+    /* computed from the two rounded numbers the report shows, so Overall always equals CRO^a x Speed^b on screen */
+    var gscore = !gAll ? null : gCro && gSp ? Math.round(Math.exp((gCro.w * Math.log(Math.max(5, gCro.v)) + gSp.w * Math.log(Math.max(5, gSp.v))) / gAll.w)) : gAll.v;
+    var parts = CRO_K.concat(["speed"]).filter(function (k) { return B[k] && B[k].score != null; }).map(function (k) { return { id: k, w: Math.round(1000 * PW[k] / gAll.w) / 10, v: B[k].score, est: !!B[k].est, grp: k === "speed" ? "speed" : "cro" }; });
+    var side = ["discover", "aov", "retain"].filter(function (k) { return B[k] && B[k].score != null; }).map(function (k) { return { id: k, v: B[k].score }; });
+    var mustNo = all.filter(function (q) { return q.g === "no" && q.p === "must"; }).length;
     // biggest problem in one line
     var SOFT = { B06: 1, B17: 1, B18: 1, B19: 1, B21: 1, B25: 1, B66: 1, B68: 1, B65: 1 };
-    var topQ = pq.concat(qs).filter(function (q) { return q.g === "no" && q.p === "must" && !SOFT[q.id]; }).sort(function (a, b) { return (b.w + (b.checks && b.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (b.src === "product" ? 1 : 0)) - (a.w + (a.checks && a.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (a.src === "product" ? 1 : 0)); })[0];
+    var topQ = all.filter(function (q) { return q.g === "no" && q.p === "must" && !SOFT[q.id]; }).sort(function (a, b) { return (b.w + (b.checks && b.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (b.src === "product" ? 1 : 0)) - (a.w + (a.checks && a.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (a.src === "product" ? 1 : 0)); })[0];
     var one = ctx.insight && ctx.insight.one_liner ? { text: ctx.insight.one_liner, src: "ai" } : topQ ? { text: "Shoppers asking “" + topQ.q + "” don't find an answer on this page.", src: "script" } : L[0] ? { text: "Your biggest room to grow is " + L[0].name.toLowerCase() + ": " + L[0].what.toLowerCase() + ".", src: "script" } : null;
     // three things this week
     var week = [], used = {};
     function pushW(it, br) { if (!it || used[it.t] || week.length >= 3) return; used[it.t] = 1; week.push({ title: it.fix || it.t, why: it.t + (it.ev ? (/[?.!]$/.test(it.t) ? " " : ": ") + clip(it.ev.replace(/“|”/g, "\""), 140) : ""), branch: br, tag: it.tag }); }
-    if (topQ) pushW({ t: topQ.q, ev: topQ.ev[0], fix: topQ.src === "product" ? "Answer \u201c" + topQ.q + "\u201d on the page, near the price" : topQ.fix, tag: topQ.tag }, "convert");
+    if (topQ) pushW({ t: topQ.q, ev: topQ.ev[0], fix: topQ.src === "product" ? "Answer \u201c" + topQ.q + "\u201d on the page, near the price" : topQ.fix, tag: topQ.tag }, topQ.grp || "clarity");
     L.forEach(function (l) { var its = (B[l.id].items || []).filter(function (i) { return (i.st === "bad" || i.st === "warn") && i.fix; }).sort(function (a, b) { return b.sev - a.sev; }); pushW(its[0], l.id); });
     L.forEach(function (l) { (B[l.id].items || []).filter(function (i) { return i.st === "bad" && i.fix; }).forEach(function (i) { pushW(i, l.id); }); });
     // confirm with the brand
@@ -450,15 +494,17 @@
     function addS(n, why) { if (!sv[n]) { sv[n] = 1; svc.push({ n: n, why: why }); } }
     L.slice(0, 3).forEach(function (l) {
       if (l.id === "discover") addS("TrooPerformance: SEO and AEO", "Technical SEO, schema and content so Google and AI assistants find and quote you.");
-      if (l.id === "land") { addS("TrooPerformance: site speed", "Faster first screen on phones, with apps loaded after the page is usable."); if (I.traffic === "ads" || I.ad) addS("TrooLaunch", "Dedicated landing pages that match each ad."); }
-      if (l.id === "convert" || l.id === "trust" || l.id === "aov") addS("TrooCRO", "Answers the buyer questions in this report on your pages, then tests fixed and personalised versions.");
+      if (l.id === "speed") addS("TrooPerformance: site speed", "Faster first screen on phones, with apps loaded after the page is usable.");
+      if (l.id === "flow" && (I.traffic === "ads" || I.ad)) addS("TrooLaunch", "Dedicated landing pages that match each ad.");
+      if (l.id === "clarity" || l.id === "trust" || l.id === "price" || l.id === "flow" || l.id === "aov") addS("TrooCRO", "Answers the buyer questions in this report on your pages, then tests fixed and personalised versions.");
     });
     var vis = qs.filter(function (q) { return q.id === "B01" && q.g !== "yes"; })[0];
     if (vis && /Jewellery|Home|Electronics|Fashion|Beauty/.test(cat)) addS("Troo3D", "An interactive 3D view of the product, so shoppers can see exactly what they'll get.");
     return {
       v: 1, at: new Date().toISOString(), cat: cat, sub: sub, catSrc: catSrc, market: mk, season: season, lead: lead,
       product: (ctx.insight && ctx.insight.product) || prod.title || P.title || "", buyer: (ctx.insight && ctx.insight.buyer) || "",
-      score: gscore, scoreParts: parts.map(function (x) { return { id: x.id, w: Math.round(1000 * x.w / tw) / 10, v: x.v, est: x.est }; }), penalty: penalty, mustNo: mustNo, qScore: qscore, layout: croS,
+      score: gscore, cro: gCro ? gCro.v : null, speed: gSp ? gSp.v : null, croW: gCro && gAll ? Math.round(1000 * gCro.w / gAll.w) / 10 : null, speedW: gSp && gAll ? Math.round(1000 * gSp.w / gAll.w) / 10 : null,
+      parts: parts, side: side, scoreV: 3, mustNo: mustNo, qScore: qscore, layout: croS,
       one: one, qs: pq.concat(qs), branches: B, money: money, levers: L, week: week, confirm: confirm.slice(0, 8), you: you, peers: peers, services: svc,
       inputs: { goal: I.goal || "conversion", traffic: I.traffic || "", ad: I.ad || "" }, ai: !!(ctx.insight && ctx.insight.questions),
       reads: { crawl: !!(ctx.crawl && ctx.crawl.pages), trust: !!(tr.facts), insight: !!(ctx.insight && ctx.insight.questions), peers: peers.length, side: !!ctx.side },
@@ -485,7 +531,7 @@
   function rQuestion(q) {
     return '<details class="tg-q ' + q.g + '"><summary><span class="tg-g ' + q.g + '" aria-label="' + esc(G_LABEL[q.g]) + '">' + G_ICON[q.g] + '</span><span class="tg-qt">' + esc(q.q) + '</span><span class="tg-gl">' + esc(G_LABEL[q.g]) + "</span></summary>" +
       '<div class="tg-qb">' + (q.why ? '<p class="tg-why">' + esc(q.why) + "</p>" : "") + (q.ev || []).map(function (e) { return "<p>" + esc(e) + "</p>"; }).join("") + (q.note ? "<p>" + esc(q.note) + "</p>" : "") +
-      (q.g !== "yes" && q.fix ? '<p class="tg-fix"><b>Fix:</b> ' + esc(q.fix) + "</p>" : "") + '<div class="tg-qtags">' + tag(q.tag) + (q.src === "product" ? '<span class="tg-tag estimate">Question written for this product</span>' : "") + "</div></div></details>";
+      (q.g !== "yes" && q.fix ? '<p class="tg-fix"><b>Fix:</b> ' + esc(q.fix) + "</p>" : "") + '<div class="tg-qtags">' + tag(q.tag) + (q.grp && BR_NAME[q.grp] ? '<span class="tg-tag pillar">' + esc(BR_NAME[q.grp]) + "</span>" : "") + (q.src === "product" ? '<span class="tg-tag estimate">Question written for this product</span>' : "") + "</div></div></details>";
   }
   function rQuestions(G) {
     var pq = G.qs.filter(function (q) { return q.src === "product"; }), lq = G.qs.filter(function (q) { return q.src !== "product"; });
@@ -499,8 +545,8 @@
     });
     return '<section class="rp-sec" id="rp-questions">' + head("Buyer questions", "What " + esc(G.cat === "Other" ? "shoppers" : G.cat.toLowerCase() + " shoppers") + " ask before they pay", "The doubts " + (G.sub ? esc(G.sub.toLowerCase()) + " " : "") + "buyers have, from the Troopod barrier library" + (G.ai ? " plus questions written for this exact product" : "") + ", checked against what your page actually says. Must-solve doubts stop the sale.") + h + "</section>";
   }
-  var BR_NAME = { discover: "Discover", land: "Land", convert: "Convert", trust: "Trust", aov: "Order value", retain: "Retain" };
-  var BR_Q = { discover: "Can Google and AI assistants find you?", land: "Does the page load fast and match the ad?", convert: "Does the page answer buyers' doubts?", trust: "Does anything make shoppers doubt you?", aov: "Does the page invite a bigger basket?", retain: "Will first-time buyers come back?" };
+  var BR_NAME = { clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", speed: "Speed on phone", flow: "Focus & flow", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
+  var BR_Q = { clarity: "Do shoppers understand what they get and that it suits them?", trust: "Do shoppers feel safe buying here?", price: "Do shoppers see the full price, delivery date and how to pay?", speed: "Does the page load fast on a phone?", flow: "Is the path to buy clear, and does the page match the ad?", discover: "Can Google and AI assistants find you?", aov: "Does the page invite a bigger basket?", retain: "Will first-time buyers come back?" };
   function rItem(i) {
     var cls = i.st === "ok" ? "ok" : i.st === "confirm" ? "confirm" : i.st === "bad" ? "bad" : "warn";
     return '<li class="tg-it ' + cls + '"><span class="tg-dot"></span><div><b>' + esc(i.t) + "</b>" + (i.ev ? "<p>" + esc(i.ev) + "</p>" : "") + (i.fix && i.st !== "ok" ? '<p class="tg-fix"><b>Fix:</b> ' + esc(i.fix) + "</p>" : "") + "</div>" + tag(i.tag) + "</li>";
@@ -584,11 +630,11 @@
   }
   function markdown(G) {
     if (!G) return "";
-    var md = "\n## TrooGrowth\n\n" + (G.one ? "**Biggest problem:** " + G.one.text + "\n\n" : "") + "Category: " + G.cat + (G.sub ? " > " + G.sub : "") + ". Season: " + G.season.name + ".\n\n### Three things this week\n" + G.week.map(function (w, i) { return (i + 1) + ". " + w.title + " (" + (BR_NAME[w.branch] || "") + ")"; }).join("\n") + "\n\n### Buyer questions\n";
+    var md = "\n## TrooGrowth\n\n" + "Overall " + G.score + "/100 (CRO " + G.cro + "/100, " + G.croW + "%; speed " + G.speed + "/100, " + G.speedW + "%).\n\n" + (G.one ? "**Biggest problem:** " + G.one.text + "\n\n" : "") + "Category: " + G.cat + (G.sub ? " > " + G.sub : "") + ". Season: " + G.season.name + ".\n\n### Three things this week\n" + G.week.map(function (w, i) { return (i + 1) + ". " + w.title + " (" + (BR_NAME[w.branch] || "") + ")"; }).join("\n") + "\n\n### Buyer questions\n";
     G.qs.forEach(function (q) { md += "- [" + G_LABEL[q.g] + "] " + q.q + (q.g !== "yes" && q.fix ? " Fix: " + q.fix : "") + "\n"; });
     md += "\n### Growth levers\n"; G.levers.forEach(function (l) { md += l.rank + ". " + l.name + ": " + l.score + "/100, 10% better is worth " + moneyFmt(l.inr10, G.money.cur) + "/month\n"; });
     return md;
   }
 
-  win.TrooGrowth = { catOf: catOf, pageText: pageText, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf };
+  win.TrooGrowth = { catOf: catOf, pageText: pageText, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, NAMES: BR_NAME };
 })();

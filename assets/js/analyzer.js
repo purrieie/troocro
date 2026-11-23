@@ -1060,15 +1060,38 @@
       gx.shopT0 = Date.now();
       return gapi("/shop", { url: r.url, category: cat, sub: sub || "", market: mk, currency: p.currency || "", pageType: p.pageType, title: p.title, product: prod.title || t.h1 || "", price: prod.price ? (p.currency === "USD" ? "$" : p.currency === "GBP" ? "£" : "Rs ") + prod.price : p.aov ? (p.currency === "USD" ? "$" : "Rs ") + p.aov : "", text: text.slice(0, 6000), first: first, policy: tr.policyText || "", facts: shopFacts(r, tr), rating: rt, shot: shot, t: CFG.shopTest || undefined }, 90000, CFG.shop || String(CFG.growth || "").replace(/\/+$/, "") + "-shop");
     });
+    startGrade(r, catP);
+  }
+  /* v13: the AI grader answers the category's buyer questions on the page (troogrowth-grade), in parallel with the shoppers */
+  function startGrade(r, catP) {
+    var gx = S.gx, p = r.page || {};
+    /* the AI reader's category (from the shoppers call) beats our keyword guess; wait up to 45s for it */
+    var aiCatP = Promise.race([Promise.resolve(gx.shopP).then(function (d) { return d && d.category; }).catch(function () { return null; }), sleep(45000).then(function () { return null; })]);
+    gx.gradeP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP, aiCatP]).then(function (x) {
+      var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[3] || x[2] || "Other";
+      if (!t || !t.main || t.main.length < 300 || !win.TrooGrowth.qList) return null;
+      var L = win.TrooGrowth.qList(cat, [p.title, t.h1, prod.title, prod.type].join(" "), t.main.slice(0, 4000));
+      if (!L) return null;
+      var text = (prod.desc && t.main.indexOf(prod.desc.slice(0, 40)) < 0 ? prod.desc.slice(0, 1500) + " " : "") + t.main;
+      var ex = t.live && t.live.extra; if (ex && t.live.mode === "added") text = text.slice(0, 10000) + " " + ex.slice(0, 2000);
+      var f = (r.cro && r.cro.f) || {}, facts = [];
+      if (f.gallery != null) facts.push(f.gallery + " product photos in the gallery");
+      if (f.video != null) facts.push(f.video ? "has a product video" : "no product video");
+      shopFacts(r, tr).slice(0, 6).forEach(function (x) { facts.push(x); });
+      var slim = function (q) { var o = { id: q.id, q: q.q, good: q.good }; if (q.c) o.c = q.c; return o; };
+      return gapi("/grade", { url: r.url, v: "13a", cat: cat, list: L.key, product: prod.title || t.h1 || "", price: prod.price ? "Rs " + prod.price : "", facts: facts.join("; "), text: text.slice(0, 12000), policy: tr.policyText || "",
+        qs: L.qs.map(slim), adds: L.adds.map(function (a) { return { n: a.n, qs: a.qs.map(slim) }; }), rules: L.rules, t: CFG.shopTest || undefined }, 70000, CFG.grade || String(CFG.growth || "").replace(/\/+$/, "") + "-grade")
+        .then(function (d) { if (d && d.grades) { d.list = L.key; d.cat = cat; } return d && d.grades ? d : null; });
+    });
   }
   async function growthCtx(capMs) {
     var gx = S.gx || {}, cap = function (pr, ms) { return Promise.race([pr || Promise.resolve(null), sleep(ms).then(function () { return null; })]); };
     var left = Math.max(4000, capMs);
     var shopLeft = Math.max(left, gx.shopT0 ? 75000 - (Date.now() - gx.shopT0) : 45000);
-    var x = await Promise.all([cap(gx.textP, 3000), cap(gx.crawlP, left), cap(gx.trustP, left), cap(gx.insightP, left), cap(gx.peersP, left), cap(gx.shopP, shopLeft)]);
+    var x = await Promise.all([cap(gx.textP, 3000), cap(gx.crawlP, left), cap(gx.trustP, left), cap(gx.insightP, left), cap(gx.peersP, left), cap(gx.shopP, shopLeft), cap(gx.gradeP, shopLeft)]);
     var shop = x[5] && x[5].personas ? x[5] : null;
     var ins = shop ? { product: shop.product, buyer: shop.buyer, one_liner: shop.one_liner, contradictions: shop.contradictions || [] } : x[3];
-    return { text: x[0] || { all: "", main: "", h1: "" }, crawl: x[1], trust: x[2] && !x[2].error ? x[2] : null, insight: ins, shop: shop, peers: x[4], side: S.sideTxt || "", sideMain: S.sideMain || "" };
+    return { text: x[0] || { all: "", main: "", h1: "" }, crawl: x[1], trust: x[2] && !x[2].error ? x[2] : null, insight: ins, shop: shop, grade: x[6] || null, peers: x[4], side: S.sideTxt || "", sideMain: S.sideMain || "" };
   }
   function compactComp(c) {
     var p = c.page || {};
@@ -2179,6 +2202,94 @@
       ' <span class="rp-formula">Overall = CRO<sup>0.85</sup> × Speed<sup>0.15</sup></span></p></details>';
     return h;
   }
+
+  /* ---------------- v14 report: the fix workbench ----------------
+     Sticky top bar with tabs; left: score, the #1 problem, the tick-box fix planner and a revenue calculator;
+     right: the page on a phone with numbered pins that match the fixes. Every number comes from the same plan model. */
+  function wbRing(v) {
+    return '<div class="wb-ring" data-wb-ring style="--now:' + (v || 0) + ";--to:" + (v || 0) + '"><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="bg" cx="60" cy="60" r="52" pathLength="100"/><circle class="to" cx="60" cy="60" r="52" pathLength="100"/><circle class="now" cx="60" cy="60" r="52" pathLength="100"/></svg>' +
+      '<div class="wb-ring-v"><b data-wb-to>' + (v == null ? "–" : v) + '</b><span class="wb-ring-from">now ' + (v == null ? "–" : v) + "</span></div></div>";
+  }
+  function rpWorkbench(R, C, GR, opts, host, T, hasComp, created) {
+    var G = R.growth, W = GR.wb, Pl = G.plan || { cro: [], speed: [], base: {} }, P = R.page || {};
+    var path = ""; try { path = new URL(R.url).pathname; } catch (e) { /* ignore */ }
+    var miss = G.qs.filter(function (q) { return q.g === "no"; }).length, part = G.qs.filter(function (q) { return q.g === "partly"; }).length;
+    var lcp = Pl.vit && Pl.vit.lcp != null ? Pl.vit.lcp : null, mon = G.money || {}, cur = mon.cur || P.currency || "INR";
+    var top = Pl.cro.concat(Pl.speed).filter(function (f) { return f.gain > 0; }).sort(function (a, b) { return b.gain - a.gain; })[0] || Pl.cro[0];
+    var tabs = [["plan", "Fix planner", Pl.upCro ? "+" + (Pl.upCro + (Pl.est ? 0 : Pl.upSpeed)) + " pts" : ""], ["questions", "Buyer questions", miss + " missing · " + part + " partly"], ["voice", "Customer voice", G.voice != null ? G.voice + "/100" : ""],
+      ["speed", "Speed, search & AI", lcp != null ? "LCP " + lcp.toFixed(1) + "s" : C.speed != null ? C.speed + "/100" : ""], ["growth", "Growth plan", G.levers.length ? G.levers.length + " levers" : ""], ["next", "Next step", ""]];
+    var h = '<div class="wb" data-plan data-wb data-phone="now">';
+    /* top bar */
+    h += '<header class="wb-top"><div class="wb-id"><span class="wb-mark" aria-hidden="true">T</span><div><b>TrooCRO <em>v14</em></b><span>' + esc(PAGE_TYPE[P.pageType] || "Page") + " diagnostic · " + esc(clip2(host + (path.length > 1 ? path : ""), 70)) + "</span></div></div>" +
+      '<div class="wb-chips">' + (G.cat ? '<span class="wb-chip">' + esc(G.cat) + (G.qList ? " · " + esc(LIST_NAME[G.qList] || G.qList) : "") + "</span>" : "") + (P.platform ? '<span class="wb-chip">' + esc(P.platform) + "</span>" : "") + '<span class="wb-chip">' + esc(created.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })) + "</span></div>" +
+      '<div class="wb-acts">' + (opts.mode === "live" ? '<button class="wb-btn" type="button" data-share' + (S.saveState === "saved" ? "" : " disabled") + ">" + (S.saveState === "saved" ? "Share report" : "Saving…") + "</button>" : "") + '<button class="wb-btn" type="button" data-print>Download PDF</button>' + (opts.mode !== "sample" ? '<button class="wb-btn" type="button" data-new>New scan</button>' : "") + '<a class="wb-btn cta" href="#wb-next" data-wb-goto="next">Fix with TrooCRO</a></div></header>';
+    h += '<nav class="wb-tabs" role="tablist" aria-label="Report sections">' + tabs.map(function (t, i) { return '<button type="button" role="tab" data-wb-tab="' + t[0] + '" aria-selected="' + (i === 0) + '"' + (i ? ' tabindex="-1"' : "") + '><span class="n">' + (i + 1) + "</span>" + esc(t[1]) + (t[2] ? '<em>' + esc(t[2]) + "</em>" : "") + "</button>"; }).join("") + "</nav>";
+    h += '<div class="wb-grid"><div class="wb-main">';
+    /* ---- panel 1: plan ---- */
+    h += '<section class="wb-panel" data-wb-panel="plan" id="wb-plan">';
+    var verdict = C.verdict || "";
+    h += '<div class="wb-card wb-score">' + wbRing(C.total) + '<div class="wb-score-t"><span class="wb-k">Score now ' + (C.total == null ? "–" : C.total) + '/100 · with <span data-wb-n>' + (Pl.defaultOn || []).length + ' fixes</span> <b class="up" data-wb-up></b></span><h2>' + esc(verdict) + '</h2><p>' + esc("This page only, for a shopper who is already on it." + (Pl.est ? " Speed is estimated." : "")) + "</p></div>" +
+      '<div class="wb-bars">' + [["cro", "CRO", C.cro, C.croW, "data-wb-cro"], ["speed", "Speed on phone", C.speed, C.speedW, "data-wb-sp"]].map(function (x) { return '<div class="wb-bar ' + x[0] + '"><div class="l"><i class="pl-dot ' + x[0] + '"></i>' + esc(x[1]) + ' <span>(' + (x[3] != null ? x[3] + "%" : "") + ')</span><b ' + x[4] + '-v>' + (x[2] == null ? "n/a" : x[2]) + '</b></div><span class="t"><i class="to" ' + x[4] + '-to style="width:' + (x[2] || 0) + '%"></i><i class="now" style="width:' + (x[2] || 0) + '%"></i></span></div>'; }).join("") + "</div>" +
+      '<div class="wb-lift"><span class="wb-k">Est. revenue lift</span><b data-wb-lift>–</b><span data-wb-lift-n class="s"></span><span class="s">At <b data-wb-lift-v></b> visitors a month' + (mon.src && mon.src.visitors === "you" ? "" : " (our guess: change it below)") + '</span></div></div>';
+    if (top) h += '<div class="wb-card wb-driver"><div><span class="wb-badge">#1 thing costing sales</span>' + (top.gain ? '<span class="wb-badge g">' + gainTxt2(top.gain) + " pts on its own</span>" : "") + "<h3>" + esc(top.t) + "</h3>" + (top.ev ? "<p>" + esc(clip2(top.ev, 260)) + "</p>" : "") + '</div><button type="button" class="wb-btn" data-wb-locate="' + esc(top.id) + '">Show on phone</button></div>';
+    h += '<div class="wb-card wb-planner"><div class="wb-ph"><div><h3>Fix planner</h3><p>Tick fixes to see your new score. Each fix comes from a buyer question your page leaves open, a house rule it misses, or a speed problem, and its number is the pin on the phone.</p></div></div>' + (W.plan ? W.plan.side : '<p class="pl-empty">No fixes to plan on this page.</p>') + "</div>";
+    h += '<div class="wb-card wb-calc" data-wb-calc data-cur="' + esc(cur) + '"><div class="wb-ph"><div><h3>What the ticked fixes could be worth</h3><p>Change these to your real numbers. Our assumption: conversion rises by half of the CRO gain from your ticked fixes, capped at +15%.</p></div>' + (G.season && G.season.name ? '<span class="wb-chip">' + esc(G.season.name) + "</span>" : "") + "</div>" +
+      '<div class="wb-in"><label><span>Monthly visitors to this page</span><input type="number" min="0" data-c-v value="' + Math.round(mon.visitors || 30000) + '"><em>' + esc(mon.src && mon.src.visitors === "you" ? "From your answers" : "Our guess. Put yours in") + '</em></label>' +
+      '<label><span>Conversion rate (%)</span><input type="number" min="0" step="0.1" data-c-c value="' + (mon.cvr || 1.5) + '"><em>' + esc(mon.src && mon.src.cvr === "you" ? "From your answers" : mon.src && mon.src.cvr === "benchmark" ? "Category benchmark" : "Our guess") + '</em></label>' +
+      '<label><span>Average order value</span><input type="number" min="0" data-c-a value="' + Math.round(mon.aov || P.aov || 0) + '"><em>' + esc(mon.src && mon.src.aov === "page" ? "Price on the page" : mon.src && mon.src.aov === "you" ? "From your answers" : "Put yours in") + "</em></label></div>" +
+      '<div class="wb-out"><div><span>Revenue from this page now</span><b data-c-now>–</b><em data-c-on></em></div><div><span>With the ticked fixes</span><b class="g" data-c-to>–</b><em data-c-tn></em></div><div><span>Extra a year</span><b class="g" data-c-yr>–</b><em>Estimate, not a promise</em></div></div></div>';
+    h += "</section>";
+    /* ---- other panels ---- */
+    h += '<section class="wb-panel" data-wb-panel="questions" hidden>' + W.questions + "</section>";
+    h += '<section class="wb-panel" data-wb-panel="voice" hidden>' + W.voice + "</section>";
+    h += '<section class="wb-panel" data-wb-panel="speed" hidden>' + rpBeyond(R, host) + "</section>";
+    h += '<section class="wb-panel" data-wb-panel="growth" hidden>' + W.growth + (T.length ? rpTests(R, T, R.lib || {}, host, created) : "") + (hasComp ? compSection(R) : "") + "</section>";
+    h += '<section class="wb-panel" data-wb-panel="next" id="wb-next" hidden>' + rpNext(R, C, host, GR.services) + "</section>";
+    h += "</div>";
+    /* ---- right: the phone ---- */
+    h += '<aside class="wb-side"><div class="wb-card wb-phonecard"><div class="wb-ph"><div><span class="wb-k">Your page on a phone</span><p>Tap a number to see the fix.</p></div><div class="wb-mode" role="group" aria-label="Phone view"><button type="button" data-wb-mode="now" aria-pressed="true">Now (' + (C.total == null ? "–" : C.total) + ')</button><button type="button" data-wb-mode="to" data-wb-mode-to aria-pressed="false">With fixes</button></div></div>' +
+      (W.plan ? W.plan.phone : "") + '<div class="wb-hot" data-wb-hot hidden></div></div></aside>';
+    h += "</div></div>";
+    return h;
+  }
+  var LIST_NAME = { furniture: "Furniture", decor: "Décor", fashion: "Apparel", beauty: "Beauty", supplements: "Supplements", supports: "Body supports", food: "Food", fine: "Fine jewellery", fashionjewel: "Fashion jewellery", electronics: "Electronics", baby: "Baby & kids", pet: "Pet", sports: "Sports", other: "General" };
+  function gainTxt2(g) { return g == null ? "n/a" : g === 0.5 ? "<1" : "+" + g; }
+  function wireWorkbench(root, R) {
+    var wb = $(".wb", root); if (!wb) return;
+    var tabs = $$("[data-wb-tab]", wb);
+    function sel(id, focus) {
+      tabs.forEach(function (b) { var on = b.getAttribute("data-wb-tab") === id; b.setAttribute("aria-selected", on); b.tabIndex = on ? 0 : -1; if (on && focus) b.focus(); });
+      $$("[data-wb-panel]", wb).forEach(function (p) { p.hidden = p.getAttribute("data-wb-panel") !== id; });
+      var y = wb.getBoundingClientRect().top + win.scrollY - 70; if (win.scrollY > y) win.scrollTo({ top: y, behavior: "smooth" });
+    }
+    tabs.forEach(function (t, i) {
+      t.addEventListener("click", function () { sel(t.getAttribute("data-wb-tab")); });
+      t.addEventListener("keydown", function (e) { if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return; e.preventDefault(); sel(tabs[(i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length].getAttribute("data-wb-tab"), true); });
+    });
+    $$("[data-wb-goto]", wb).forEach(function (a) { a.addEventListener("click", function (e) { e.preventDefault(); sel(a.getAttribute("data-wb-goto")); }); });
+    /* links inside panels that point at another panel's section */
+    wb.addEventListener("click", function (e) {
+      var a = e.target.closest ? e.target.closest('a[href^="#rp-"]') : null; if (!a) return;
+      var tgt = $(a.getAttribute("href"), wb); if (!tgt) return; var pn = tgt.closest("[data-wb-panel]"); if (!pn) return;
+      e.preventDefault(); sel(pn.getAttribute("data-wb-panel")); setTimeout(function () { tgt.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);
+    });
+    /* revenue calculator: reads the plan's CRO lift from the wrapper */
+    var calc = $("[data-wb-calc]", wb); if (!calc) return;
+    var cur = calc.getAttribute("data-cur");
+    function fmt(n) { return n == null || !isFinite(n) ? "–" : money(Math.round(n), cur); }
+    wb.wbCalc = function () {
+      var v = +$("[data-c-v]", calc).value || 0, c = +$("[data-c-c]", calc).value || 0, a = +$("[data-c-a]", calc).value || 0;
+      var lift = Math.min(0.15, 0.5 * (+wb.getAttribute("data-lift") || 0)), o0 = v * c / 100, o1 = o0 * (1 + lift);
+      var r0 = a ? o0 * a : null, r1 = a ? o1 * a : null;
+      $("[data-c-now]", calc).textContent = fmt(r0); $("[data-c-to]", calc).textContent = fmt(r1); $("[data-c-yr]", calc).textContent = r0 != null ? "+" + fmt((r1 - r0) * 12) : "–";
+      $("[data-c-on]", calc).textContent = Math.round(o0).toLocaleString("en-IN") + " orders a month"; $("[data-c-tn]", calc).textContent = Math.round(o1).toLocaleString("en-IN") + " orders a month (+" + Math.round(lift * 1000) / 10 + "%)";
+      $$("[data-wb-lift]", wb).forEach(function (el) { el.textContent = r0 != null ? "+" + fmt(r1 - r0) + " / mo" : "Add your order value"; });
+      $$("[data-wb-lift-n]", wb).forEach(function (el) { el.textContent = "Conversion " + c + "% → " + (Math.round(c * (1 + lift) * 100) / 100) + "%"; });
+      $$("[data-wb-lift-v]", wb).forEach(function (el) { el.textContent = Math.round(v).toLocaleString("en-IN"); });
+    };
+    $$("input", calc).forEach(function (i) { i.addEventListener("input", wb.wbCalc); });
+    wb.wbCalc();
+  }
   function renderReport(R, opts) {
     opts = opts || {};
     var L = R.lib || { signals: {}, barriers: {}, rootCauses: {} };
@@ -2202,6 +2313,10 @@
     h += '<div class="rp-actions">' + (opts.mode === "live" ? '<button class="btn btn-ghost btn-sm" type="button" data-share' + (S.saveState === "saved" ? "" : " disabled") + "><span>" + (S.saveState === "saved" ? "Copy share link" : S.saveState === "failed" ? "Link unavailable" : "Saving link…") + "</span></button>" : opts.mode === "shared" ? '<button class="btn btn-ghost btn-sm" type="button" data-share><span>Copy share link</span></button>' : "") + (S.offline ? "" : '<button class="btn btn-ghost btn-sm" type="button" data-print>Save as PDF</button>') + '<button class="btn btn-light btn-sm" type="button" data-new>' + (opts.mode === "live" ? "Analyze another site" : "Run your own analysis") + "</button></div></header>";
 
     var GR = R.growth && win.TrooGrowth ? win.TrooGrowth.render(R.growth, R) : null;
+    if (C.v4 && GR && GR.wb && !C.unread && !opts.classic) {
+      h = '<div class="rp rp-wb">' + (opts.mode === "sample" ? '<div class="wrap"><div class="an-banner"><span><b>Sample report.</b> A real TrooCRO scan.</span></div></div>' : "") + '<div class="wb-wrap">' + rpWorkbench(R, C, GR, opts, host, T, hasComp, created) + "</div></div>";
+      return { html: h, C: C, F: F, T: T };
+    }
     /* verdict hero */
     var path = ""; try { path = new URL(R.url).pathname; } catch (e) { /* ignore */ }
     var shot = R.psi && R.psi.shots && R.psi.shots.final;
@@ -2819,6 +2934,7 @@
       copyText(base + "?r=" + R.slug).then(function () { toast("Link copied"); }, function () { toast("Couldn't copy. The link is " + base + "?r=" + R.slug); });
     });
     if (win.TrooGrowth && R.growth) win.TrooGrowth.wire(root, R.growth, { view: function () { return S.viewP && S.url === R.url ? S.viewP : fetchView(R.url); } });
+    wireWorkbench(root, R);
     var pr = $("[data-print]", root); if (pr) pr.addEventListener("click", function () { $$("details", root).forEach(function (d) { d.open = true; }); win.print(); });
     var ft = $("[data-full-toggle]", root), fb = $("[data-full]", root);
     if (ft && fb) ft.addEventListener("click", function () {

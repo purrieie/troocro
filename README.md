@@ -79,6 +79,37 @@ The Groq key and the server PageSpeed key are placeholders in this repo (`__GROQ
   - Research behind the weights: eTailQ (Wolfinbarger & Gilly 2003), MECLABS heuristic, Baymard abandonment survey, Spiegel reviews study, Deloitte/Google Milliseconds Make Millions, Portent 2022, Di Fatta et al. 2018, OECD/JRC composite-indicator handbook. Weights are priors until calibrated on real conversion data.
 - **Report**: snapshot, the biggest problem in one line, three things to do this week, buyer questions, levers, you vs two category leaders, things to confirm with the team, and the Troopod services that fit the top levers. Every line is tagged Seen, Estimate or Confirm.
 
+## v13 buyer questions and v14 report (Nov 2026)
+
+**Buyer questions (v13).** Each product page gets one question list for its kind of product, reviewed by an outside CRO audit and trimmed of questions no real buyer asks:
+- 14 lists: furniture, décor, apparel, beauty, supplements, body supports, food, fine jewellery, fashion jewellery, electronics, baby, pet, sports, other.
+- Sub-category add-ons, for example rugs, sunscreen or diamonds.
+- Delivery, returns and reviews are shared questions across every list.
+
+The list lives in `assets/js/troogrowth-lib.js` (`q13`). The question source is not in this repo.
+
+- **Grading.** One AI call (Supabase function `troogrowth-grade`) grades every question:
+  - The outcomes are answered, partly, not answered or not applicable, each with the page's own words.
+  - A quote that isn't on the page is downgraded.
+  - Conditional questions are left out when they don't apply. Example: an EMI question only counts above a set price.
+  - Lab reports, vet standards and toy standards count only when the page claims them.
+  - Refund mode counts only when we read the policy text.
+- **Score.** Customer voice = 70% buyer questions (partly = half) + 30% reviews. The 4 shoppers stay in the report but no longer drive the score. On pages where we could read very little text, the questions and shoppers are averaged.
+- **Fixes.** Fixes come only from questions the page leaves open, house rules it misses, and speed. Fableroom fixes:
+  - A free replacement with no return fee counts as clear returns.
+  - An installed countdown app is not a penalty.
+  - Furniture, décor and fashion proof counts craft, warranty, stores and press instead of certificates.
+- **Fallback.** If the grader is down, questions are checked by keywords and marked as a first pass.
+
+**Report (v14).** The report is now a fix workbench:
+- A sticky top bar with tabs: Fix planner, Buyer questions, Customer voice, Speed/search/AI, Growth plan, Next step.
+- **Fix planner tab:**
+  - A score ring (now and with your ticked fixes).
+  - The #1 thing costing sales.
+  - The tick-box fix cards, each with evidence and how to fix.
+  - A revenue calculator. Its stated assumption: conversion rises by half the CRO gain, capped at +15%.
+- **Phone.** The page on a phone sits on the right, with pins that match the fix numbers and a Now / With fixes toggle.
+
 ## Backend (Supabase, free plan)
 
 Project: **TrooCRO** (`mrfixorpmhrnkxhqzesn`). Function URL is set in `assets/js/config.js`.

@@ -33,7 +33,7 @@
     // repeated marquee text: keep the first copy of each sentence
     var seen = {}, out = [];
     main.replace(/([.!?])\s+/g, "$1\u0001").split("\u0001").forEach(function (s) { var k = s.toLowerCase().slice(0, 80); if (!seen[k]) { seen[k] = 1; out.push(s); } });
-    return { all: all.slice(0, 120000), main: out.join(" ").slice(0, 20000), h1: h1t };
+    return { all: all.slice(0, 120000), main: out.join(" ").slice(0, 80000), h1: h1t };
   }
 
   /* Add what the live read saw (the page run with its own scripts) to the script-free text.
@@ -49,8 +49,8 @@
     });
     var sm = String(t.main || ""), low = sm.toLowerCase(), extra = lines.filter(function (x) { return low.indexOf(x.toLowerCase().slice(0, 50).replace(/\.$/, "")) < 0; }).join(" ");
     var mode = sm.length < 600 ? "replaced" : extra.length ? "added" : "same";
-    if (mode === "replaced") { t.main = lines.join(" ").slice(0, 20000); t.all = String(L.all || "").replace(/\s+/g, " ").slice(0, 120000) || t.main; }
-    else if (extra) { t.main = (sm + " " + extra).slice(0, 30000); t.all = (String(t.all || "") + " " + extra).slice(0, 140000); }
+    if (mode === "replaced") { t.main = lines.join(" ").slice(0, 60000); t.all = String(L.all || "").replace(/\s+/g, " ").slice(0, 120000) || t.main; }
+    else if (extra) { t.main = (sm + " " + extra).slice(0, 90000); t.all = (String(t.all || "") + " " + extra).slice(0, 140000); }
     if (!t.h1 && L.h1) t.h1 = L.h1;
     t.live = { ok: true, mode: mode, extra: extra.slice(0, 6000), added: extra.length, rv: L.rv || null, apps: L.apps || [], ms: L.total || L.ms || 0, first: L.first || null };
     return t;
@@ -195,6 +195,51 @@
     });
   }
 
+
+  /* ---------------- v13 buyer questions: one list per kind of product, graded by the AI grader (troogrowth-grade) ---------------- */
+  var Q13 = LIB.q13 || null;
+  /* which list a page uses: the category's variant whose keywords match the product, else the category default */
+  function qList(cat, s, more) {
+    if (!Q13) return null;
+    var V = Q13.variant[cat] || Q13.variant.Other, key = V.d, found = false;
+    [s, more || ""].forEach(function (x) { for (var i = 0; !found && x && i < V.v.length; i++) { if (new RegExp(V.v[i][1], "i").test(x)) { key = V.v[i][0]; found = true; } } });
+    var adds = (Q13.adds[key] || []).map(function (a) { return { n: a.n, rx: a.rx, qs: a.qs }; });
+    var hit = adds.filter(function (a) { return new RegExp(a.rx, "i").test(s); });
+    return { key: key, qs: Q13.lists[key], adds: hit.length ? hit : adds, rules: Q13.uRules.concat(Q13.rules[key] || []) };
+  }
+  var G13 = { A: "yes", P: "partly", N: "no" };
+  function gradeQ13(R, ctx, cat) {
+    var P = R.page || {}, prod = (ctx.trust || {}).product || {};
+    var L = qList(cat, [P.title, ctx.text.h1, prod.title, prod.type].join(" "), String(ctx.text.main || "").slice(0, 4000)); if (!L) return null;
+    var gr = ctx.grade && ctx.grade.grades && Q13.lists[ctx.grade.list] ? ctx.grade : null;
+    if (gr && gr.list !== L.key) L = { key: gr.list, qs: Q13.lists[gr.list] };
+    var T = (ctx.text.main || ctx.text.all || "") + " " + (ctx.side || "");
+    var pick = gr && gr.sub ? (Q13.adds[L.key] || []).filter(function (a) { return a.n === gr.sub; })[0] : null;
+    var rows = L.qs.concat(pick ? pick.qs : []), out = [];
+    rows.forEach(function (b) {
+      var q = { id: b.id, q: b.q, w: b.w, p: b.w >= 8 ? "must" : "should", fix: b.good, ev: [], src: "lib", tag: "seen", grp: Q13.tgrp[b.t] || "clarity", u: b.u || "", t: b.t, v13: true };
+      var x = gr && gr.grades[b.id];
+      if (x) {
+        if (x.g === "NA") return;
+        q.g = G13[x.g];
+        if (x.quote) q.ev.push("The page says: “" + clip(x.quote, 150) + "”");
+        q.fix = x.miss ? cap(x.miss.replace(/\.?$/, ".")) : "Show: " + b.good.charAt(0).toLowerCase() + b.good.slice(1) + ".";
+        if (q.g === "no" && !q.ev.length) q.ev.push("Not answered on the page.");
+      } else {
+        if (b.c || gr) return; // conditional ones need the grader; a question the grader skipped is left out
+        var hit = findQ(T, Q13.topic[b.t]);
+        q.g = hit ? "partly" : "no"; q.tag = "estimate";
+        q.ev.push(hit ? evq("related text", hit) + " Checked by keywords only." : "No related text found. Checked by keywords only.");
+      }
+      out.push(q);
+    });
+    (gr && gr.extra || []).forEach(function (x) {
+      out.push({ id: x.id, q: x.q, w: x.w, p: x.w >= 8 ? "must" : "should", g: G13[x.g], fix: x.miss ? cap(x.miss) : "", ev: x.quote ? ["The page says: “" + clip(x.quote, 150) + "”"] : ["Not answered on the page."], src: "product", tag: "seen", grp: "clarity", v13: true });
+    });
+    out.list = L.key; out.sub = pick ? pick.n : ""; out.ai = !!gr;
+    return out;
+  }
+
   /* ---------------- installed apps (server stack + raw page read) ---------------- */
   function appsOf(R, ctx) {
     var out = { reviews: [], messaging: [], loyalty: [], referral: [], subscription: [], upsell: [], quiz: [], checkout: [], all: [] };
@@ -328,6 +373,7 @@
   function trust(R, ctx, qs) {
     var t = ctx.trust || {}, items = [], ins = ctx.insight || {}, f = t.facts || {}, apps = appsOf(R, ctx);
     (t.contradictions || []).forEach(function (c) {
+      if (/returns?|exchange|refund/i.test(c.issue) && c.b && FREE_REPL.test(c.b.quote || "")) return; // a free replacement with no fee is a clear returns promise, not a conflict
       if (/^The page promises easy returns/.test(c.issue) && /\b(sale|offer|discount|personali[sz]ed|custom|hygiene|opened|used|innerwear|clearance|free gift)\b/i.test(c.b.quote)) {
         items.push(item("contra_exc", "Easy returns, with exceptions the page doesn't mention", "warn", "Page: \u201c" + clip(c.a.quote, 100) + "\u201d  Policy: \u201c" + clip(c.b.quote, 120) + "\u201d", "Add the exception next to the returns promise (one short line).", "seen", 1));
         return;
@@ -503,6 +549,8 @@
     var P = R.page || {}, tr = ctx.trust || {}, sh = ctx.shop || null, f = (R.cro && R.cro.f) || null, out = {};
     function set(id, st, ev) { out[id] = { id: id, t: RULE_DEF[id].t, bad: RULE_DEF[id].bad, st: st, v: st === "pass" ? 1 : st === "partly" ? 0.5 : st === "fail" ? 0 : null, ev: ev || "", fix: RULE_DEF[id].fix, region: RULE_DEF[id].region }; }
     var Q = {}; qs.forEach(function (q) { Q[q.id] = q; });
+    var RANK = { yes: 3, partly: 2, no: 1 }, best = function (t) { return qs.filter(function (q) { return q.v13 && q.t === t; }).sort(function (a, b) { return (RANK[b.g] || 0) - (RANK[a.g] || 0); })[0]; };
+    if (qs.length && qs[0].v13) { Q.B09 = best("delivery"); Q.B08 = best("returns"); }
     var main = ctx.text.main || "", h1 = (ctx.text.h1 || "").slice(0, 40), i0 = h1 ? main.indexOf(h1) : -1, top = main.slice(Math.max(0, i0), Math.max(0, i0) + 1500);
     /* 1. one clear price */
     var pc = {}, offers = 0, m, re = /(\d{1,2})\s?%\s?off/gi;
@@ -558,7 +606,8 @@
     /* 6. returns */
     var q8 = Q.B08 || Q.B50, cl = tr.claims || {}, restr = fa.noReturns || fa.exchangeOnly || fa.damagedOnly;
     var stated = cl.returnDays || cl.easyReturns || (q8 && q8.g === "yes");
-    if (stated && !restr) set("returns", "pass", cl.returnDays ? "The page states " + cl.returnDays.days + "-day returns." : "Returns are stated on the page.");
+    if (restr && FREE_REPL.test(restr.quote || "") && !fa.noReturns) set("returns", "pass", "Free replacement, no return fee: \u201c" + clip(restr.quote, 110) + "\u201d");
+    else if (stated && !restr) set("returns", "pass", cl.returnDays ? "The page states " + cl.returnDays.days + "-day returns." : "Returns are stated on the page.");
     else if (stated || restr || (q8 && q8.g === "partly") || (fa.returnDays || []).length) set("returns", "partly", restr ? "Returns are limited: “" + clip((restr.quote || ""), 110) + "”" : "Returns are mentioned but not stated plainly near the button.");
     else set("returns", "fail", "We couldn't find a returns or exchange promise.");
     /* 7. stock */
@@ -572,7 +621,7 @@
     var px = sk && sk.price && sk.compareAt && sk.compareAt > sk.price ? Math.round(100 * (1 - sk.price / sk.compareAt)) : (tr.product && tr.product.compareAt && tr.product.price && tr.product.compareAt > tr.product.price ? Math.round(100 * (1 - tr.product.price / tr.product.compareAt)) : 0);
     if (fake.length) set("pressure", "fail", fake[0].ev || fake[0].t);
     else if (px >= 70) set("pressure", "partly", px + "% off the MRP every day reads as an inflated MRP." + (timer.length ? " Plus a countdown." : ""));
-    else if (timer.length) set("pressure", "partly", timer[0].t + ": " + (timer[0].ev || "") + " Make sure it's real.");
+    else if (timer.filter(function (x) { return x.k === "timer_text"; }).length) { var tt = timer.filter(function (x) { return x.k === "timer_text"; })[0]; set("pressure", "partly", tt.t + ": " + (tt.ev || "") + " Make sure it's real."); }
     else set("pressure", "pass", "No countdowns or made-up stock numbers.");
     return RULE_ORDER.map(function (k) { return out[k]; });
   }
@@ -607,6 +656,10 @@
   }
   /* Proof on the page: what a careful shopper can check besides reviews (tests, certificates, awards, other platforms;
      specs and materials; results with numbers). Brand equity counts as proof for household names and well-known premium brands. */
+  var FREE_REPL = /replace(?:ment)?[^.]{0,90}(?:free of charge|no (?:return |extra )?(?:fee|charge|cost)|at no (?:extra )?cost|\bfree\b)|free (?:of charge )?replacement/i;
+  var NOCERT = { furniture: 1, decor: 1, fashion: 1, fashionjewel: 1 };
+  var CRAFT_RX = /\d+[- ](?:year|month)s? warranty|warranty|hand[- ]?(?:made|woven|crafted|knotted|carved|tufted|block[- ]printed|embroidered)|artisans?|kiln[- ]dried|solid (?:wood|sheesham|teak|mango)|customer photos|experience (?:centre|center|store)|our stores?|showroom|since (?:19|20)\d\d|\d+\+? years? of (?:craft|experience)|anti[- ]tarnish warranty|stain[- ]resistant|termite[- ](?:proof|resistant)/gi;
+  var PROOF_FIX = { furniture: "Show what proves the build: close-ups of the wood and joints, the warranty in years, room photos from buyers, and your stores or press.", decor: "Show what proves the quality: close-ups of the finish, the maker or craft behind it, buyer photos at home and any press.", fashion: "Show what proves the quality: fabric close-ups, fit notes from reviews, buyer photos and ratings from Myntra or Ajio.", fashionjewel: "Show what proves the quality: plating details, an anti-tarnish warranty, buyer photos after weeks of wear." };
   var PROOF_RX = /clinical(?:ly)?|\b(?:scientific|independent|published|research)\s+stud(?:y|ies)\b|\bstud(?:y|ies)\s+(?:show|shows|showed|found|proves?|confirm(?:s|ed)?)\b|volunteers|participants|dermatologist[- ](?:tested|approved)|lab[- ]tested|third[- ]party|certified|certificate|hallmark|\bbis\b|\bigi\b|\bgia\b|\bisi\b|fssai|\biso\b|\bgmp\b|ayush|patent|award|as seen (?:in|on)|featured in|bee \d|\d[- ]star (?:rated|energy)|organic certified|india organic|usda|great taste|peta|vegan society|oeko|gots/gi;
   var INFO_RX = /how to (?:use|brew|wear|apply|install)|directions|ingredients?|specifications?|dimensions|material|fabric|cotton|polyester|linen|\bgsm\b|\bfit\b|model (?:is )?wear|size chart|wash|in the box|what.s inside|care (?:guide|instructions)|battery|playback|playtime|bluetooth|warranty|ipx\d|water[- ]resistant|compatib|\brpm\b|\bwatts?\b|bldc|motor|remote|purity|carat|karat|\d{2}kt|silver|brass|plating|gold weight|net (?:weight|quantity|wt)|shelf life|nutrition|calories|protein|servings?|cups? per|origin|sourced|preservative|arabica|thickness|layers?|foam|firmness|trial|weight/gi;
   function proof4(R, ctx, sh, rules, RV) {
@@ -615,8 +668,11 @@
     /* someone else vouches: tests, certificates, awards, other platforms */
     var kinds = {}; (t.match(PROOF_RX) || []).forEach(function (m) { kinds[m.toLowerCase().slice(0, 6)] = 1; });
     var plat = /(?:nykaa|amazon|flipkart|myntra|google)[^.]{0,40}(?:\d\.\d|rating)/i.test(t); if (plat) kinds.platfm = 1;
+    /* v13: furniture, decor, fashion and fashion jewellery don't come with certificates; their proof is craft, warranty and real use */
+    var noCert = NOCERT[ctx.qList || ""];
+    if (noCert) (t.match(CRAFT_RX) || []).forEach(function (m) { kinds["c_" + m.toLowerCase().replace(/[^a-z]/g, "").slice(0, 6)] = 1; });
     var nk = Object.keys(kinds).length;
-    add("tested", nk, nk >= 2 ? 25 : 12, "Tests, certificates, awards or other platforms");
+    add("tested", nk, nk >= 2 ? 25 : 12, noCert ? "Craft, warranty, stores, press or other platforms" : "Tests, certificates, awards or other platforms");
     /* specifics a shopper can hold you to */
     var info = {}; (t.match(INFO_RX) || []).forEach(function (m) { info[m.toLowerCase().replace(/[^a-z]/g, "").slice(0, 6)] = 1; });
     var ni = Object.keys(info).length;
@@ -668,6 +724,7 @@
     var rv = rs.length ? 100 * rs.reduce(function (t, r) { return t + (on["r_" + r.id] ? 1 : r.v); }, 0) / rs.length : null;
     var sw = 0, ss = 0; Mo.shop.forEach(function (p) { sw += p.fit; ss += p.fit * (on["p_" + p.id] ? Math.max(p.buy, p.to) : p.buy); });
     var sv = sw ? ss / sw : null;
+    if (Mo.q13 && Mo.q13.length) { var qw = 0, qs2 = 0; Mo.q13.forEach(function (q) { qw += q.w; qs2 += q.w * (on["q_" + q.id] ? 1 : q.v); }); sv = Mo.thin && sv != null ? (100 * qs2 / qw + sv) / 2 : 100 * qs2 / qw; }
     /* customer voice: the shoppers plus what past buyers say in reviews (30%) */
     if (Mo.rev != null) sv = sv == null ? Mo.rev : (1 - (Mo.revW || 0.3)) * sv + (Mo.revW || 0.3) * Mo.rev;
     Mo.fixes.forEach(function (f) { if (on[f.id] && LH_W[f.e.t]) fx[f.e.t] = 1; });
@@ -705,14 +762,17 @@
     ctx.adMatch = adMatchOf(I.ad, R, ctx.text); ctx.traffic = I.traffic || "";
     var lead = !!P.lead;
     ctx.sub = sub;
-    var qs = gradeLib(R, ctx, cat);
-    var pq = gradeProduct(ctx.insight, ctx);
+    var q13 = !lead && Q13 ? gradeQ13(R, ctx, cat) : null;
+    var qs = q13 || gradeLib(R, ctx, cat);
+    ctx.qList = q13 ? q13.list : "";
+    var pq = q13 ? [] : gradeProduct(ctx.insight, ctx);
     var money = moneyOf(R, cat);
     if (lead && !(+I.aov)) { money.aov = null; money.rev = null; }
     var B = {}, all = pq.concat(qs);
     if (lead) all.forEach(function (q) { if (q.grp === "price") q.grp = "clarity"; });
     var graded = all.filter(function (q) { return q.g !== "confirm" && GSCORE[q.g] != null; });
-    function qsc(a) { var ws = a.reduce(function (s, q) { return s + q.w; }, 0); return ws ? Math.round(100 * a.reduce(function (s, q) { return s + q.w * GSCORE[q.g]; }, 0) / ws) : null; }
+    var GS = q13 ? { yes: 1, partly: 0.5, no: 0 } : GSCORE;
+    function qsc(a) { var ws = a.reduce(function (s, q) { return s + q.w; }, 0); return ws ? Math.round(100 * a.reduce(function (s, q) { return s + q.w * GS[q.g]; }, 0) / ws) : null; }
     function qOf(grp) { return qsc(graded.filter(function (q) { return q.grp === grp; })); }
     function qItems(grp, n, skip) {
       skip = skip || {};
@@ -833,14 +893,25 @@
     var rules = rules4(R, ctx, qs, TR), rApp = rules.filter(function (r) { return r.v != null; });
     var rScore = rApp.length ? Math.round(100 * rApp.reduce(function (t, r) { return t + r.v; }, 0) / rApp.length) : null, sScore = shopScore(sh);
     var RV = reviews4(R, ctx, sh), PF = proof4(R, ctx, sh, rules, RV), LK = looks4(R, ctx);
+    /* v13: when the AI grader answered, the customer voice is the buyer questions (70%) plus reviews (30%); the 4 shoppers stay as colour */
+    var qAI = q13 && q13.ai, qG = qAI ? q13.filter(function (q) { return GS[q.g] != null; }) : [];
+    var qScore = qG.length ? qsc(qG) : null;
+    /* when we could read only a little of the page (specs in tabs that didn't load), unanswered can mean unread: lean on the shoppers too */
+    var thin = String(ctx.text.main || "").length < 3500;
+    if (qScore != null && thin && sScore != null) qScore = Math.round((qScore + sScore) / 2);
+    if (qScore != null) sScore = qScore;
     var vScore = sScore == null ? RV.score : RV.score == null ? sScore : Math.round((1 - REV_W) * sScore + REV_W * RV.score);
     var missP = PF.items.filter(function (i) { return !i.ok && !i.bad && !i.unk; }).map(function (i) { return i.label.toLowerCase(); });
     var proofTo = PF.carry >= PF.raw ? PF.score : Math.min(100, PF.score + 25);
-    var Mo4 = { v4: true, proof: PF.score, proofTo: proofTo, wP: W4.proof, rev: RV.score, revW: REV_W, rules: rules.map(function (r) { return { id: r.id, v: r.v }; }), shop: sh ? sh.personas.map(function (p) { return { id: p.id, fit: p.fit, buy: p.buy, to: p.fix && p.fix.to != null ? p.fix.to : p.buy }; }) : [], wS: W4.shop, wR: W4.rules, sp: Mo.sp, fixes: [] };
+    var Mo4 = { v4: true, proof: PF.score, proofTo: proofTo, wP: W4.proof, rev: RV.score, revW: REV_W, rules: rules.map(function (r) { return { id: r.id, v: r.v }; }), q13: qG.map(function (q) { return { id: q.id, w: q.w, v: GS[q.g] }; }), thin: thin, shop: sh ? sh.personas.map(function (p) { return { id: p.id, fit: p.fit, buy: p.buy, to: p.fix && p.fix.to != null ? p.fix.to : p.buy }; }) : [], wS: W4.shop, wR: W4.rules, sp: Mo.sp, fixes: [] };
     var fx4 = [];
     rules.forEach(function (r) { if (r.st === "fail" || r.st === "partly") fx4.push({ id: "r_" + r.id, kind: "cro", pillar: "rules", t: r.bad, ev: r.ev, fix: r.fix, sev: r.st === "fail" ? "Must solve" : "Should solve", partly: r.st === "partly", region: r.region, e: { t: "rule" } }); });
-    if (PF.score < 60 && missP.length) fx4.push({ id: "p_proof", kind: "cro", pillar: "proof", t: "Show proof shoppers can check", ev: "Missing: " + missP.slice(0, 4).join(", ") + ".", fix: "Add what this product can prove: test or certificate results with numbers, before and after, specs and materials as text, ratings from Nykaa or Amazon.", sev: PF.score < 35 ? "Must solve" : "Should solve", region: "reviews", e: { t: "proof" } });
-    (sh ? sh.personas : []).forEach(function (p) { if (p.fix && p.fix.change && p.fix.to > p.buy) fx4.push({ id: "p_" + p.id, kind: "cro", pillar: "shoppers", t: cap(p.fix.change), ev: p.n + ": “" + (p.leave || "") + "”", fix: "", sev: p.fit >= 30 ? "Must solve" : "Should solve", region: "content", e: { t: "persona" } }); });
+    if (PF.score < 60 && missP.length) fx4.push({ id: "p_proof", kind: "cro", pillar: "proof", t: "Show proof shoppers can check", ev: "Missing: " + missP.slice(0, 4).join(", ") + ".", fix: PROOF_FIX[ctx.qList] || "Add what this product can prove: test or certificate results with numbers, before and after, specs and materials as text, ratings from Nykaa or Amazon.", sev: PF.score < 35 ? "Must solve" : "Should solve", region: "reviews", e: { t: "proof" } });
+    /* v13: fixes come only from buyer questions the page leaves open, biggest first */
+    qG.filter(function (q) { return q.g !== "yes"; }).sort(function (a, b) { return b.w * (1 - GS[b.g]) - a.w * (1 - GS[a.g]); }).slice(0, 8).forEach(function (q) {
+      fx4.push({ id: "q_" + q.id, kind: "cro", pillar: "shoppers", t: q.q, ev: q.ev[0] || "", fix: q.fix || "", sev: q.p === "must" ? "Must solve" : "Should solve", partly: q.g === "partly", region: "content", e: { t: "q13" } });
+    });
+    if (!qAI) (sh ? sh.personas : []).forEach(function (p) { if (p.fix && p.fix.change && p.fix.to > p.buy) fx4.push({ id: "p_" + p.id, kind: "cro", pillar: "shoppers", t: cap(p.fix.change), ev: p.n + ": “" + (p.leave || "") + "”", fix: "", sev: p.fit >= 30 ? "Must solve" : "Should solve", region: "content", e: { t: "persona" } }); });
     var sp4 = plan.speed;
     Mo4.fixes = fx4.concat(sp4).map(function (f) { return { id: f.id, e: f.e }; });
     var b4 = project4(Mo4, []);
@@ -855,7 +926,7 @@
     res.top3 = res.plan.defaultOn.length ? { from: b4.overall, to: project4(Mo4, res.plan.defaultOn).overall } : null;
     var wsum = (vScore == null ? 0 : W4.shop) + W4.proof + (rScore == null ? 0 : W4.rules), wOf = function (w) { return Math.round(850 * w / wsum) / 10; };
     res.parts = [{ id: "shoppers", w: wOf(W4.shop), v: vScore, grp: "cro" }, { id: "proof", w: wOf(W4.proof), v: PF.score, grp: "cro" }, { id: "rules", w: wOf(W4.rules), v: rScore, grp: "cro" }, { id: "speed", w: 15, v: b4.speed, est: !!B.speed.est, grp: "speed" }].filter(function (p) { return p.v != null; });
-    res.mix = b4.P.mix; res.scoreV = 4; res.rules = rules; res.rulesScore = rScore; res.shop = sh; res.shopScore = sScore; res.voice = vScore; res.reviews = RV; res.looks = LK; res.revW = REV_W; res.proof = PF; res.w4 = { shop: vScore == null ? 0 : W4.shop / wsum, proof: W4.proof / wsum, rules: rScore == null ? 0 : W4.rules / wsum };
+    res.mix = b4.P.mix; res.scoreV = 4; res.rules = rules; res.rulesScore = rScore; res.shop = sh; res.shopScore = sScore; res.qScore = qScore; res.qList = q13 ? q13.list : ""; res.voice = vScore; res.reviews = RV; res.looks = LK; res.revW = REV_W; res.proof = PF; res.w4 = { shop: vScore == null ? 0 : W4.shop / wsum, proof: W4.proof / wsum, rules: rScore == null ? 0 : W4.rules / wsum };
     if (sh) { if (sh.one_liner) res.one = { text: sh.one_liner, src: "ai" }; if (sh.product) res.product = sh.product; if (sh.buyer) res.buyer = sh.buyer; res.brandKnown = sh.brand_known; }
     res.unread = unreadOf(R, ctx);
     if (res.unread) { res.score = null; res.cro = null; res.parts = []; }
@@ -874,7 +945,8 @@
       '<details class="sh-more"><summary>What they checked <em class="y">✓ ' + n.yes + '</em><em class="p">! ' + n.partly + '</em><em class="n">✕ ' + n.no + "</em></summary><ul>" +
       (p.checks || []).map(function (c) { return '<li class="a-' + c.a + '"><i>' + A_ICON[c.a] + "</i><span>" + esc(c.q) + (c.quote ? '<em>“' + esc(clip(c.quote, 110)) + "”</em>" : "") + "</span></li>"; }).join("") + "</ul></details></article>";
   }
-  function rShort(G, R) {
+  function rShort(G, R, opt) {
+    opt = opt || {};
     if (!G || G.scoreV !== 4) return "";
     if (G.unread) return '<section class="rp-sec sh-unread" id="rp-shoppers">' + head("We couldn't read this page", "No score for this page", esc(G.unread) + " Scoring a page we couldn't load would be wrong, so we haven't. Try the brand's own product URL, or a page that loads without a login or check screen.") + "</section>";
     var sh = G.shop, h = "", Pl = G.plan, RVW = G.reviews || null, vw = Math.round(100 * ((G.w4 && G.w4.shop) || 0.3));
@@ -882,16 +954,16 @@
     var rvRow = RVW ? '<div class="cv-rev"><b>Reviews' + (RVW.score != null ? " " + RVW.score + "/100" : "") + "</b>" +
       (RVW.items.length ? '<div class="pf-row">' + RVW.items.map(function (i) { return '<span class="pf-i ' + (i.bad ? "bad" : i.ok ? "ok" : i.unk ? "unk" : "no") + '"' + (i.unk ? ' title="Loaded with JavaScript and didn\'t load for our reader"' : "") + "><i>" + (i.bad ? "✕" : i.ok ? "✓" : i.unk ? "?" : "–") + "</i>" + esc(i.label) + "</span>"; }).join("") + "</div>" : "") +
       (RVW.noLoad ? '<p class="pf-note">Reviews on this page load with JavaScript (' + esc(RVW.noLoad.join(", ")) + ") and didn't load for our reader, so they're left out of the score instead of counted as missing.</p>" : RVW.carry ? '<p class="pf-note">No reviews on the page, but shoppers already know the brand, so they\'re left out.</p>' : RVW.hist ? '<p class="pf-note">Stars, 5 to 1: ' + RVW.hist.map(function (n) { return n.toLocaleString("en-IN"); }).join(" · ") + ".</p>" : "") + "</div>" : "";
-    var vSub = (G.shopScore != null ? "Shoppers " + G.shopScore + "/100" : "") + (RVW && RVW.score != null ? (G.shopScore != null ? ", reviews " + RVW.score + "/100 (" + Math.round(100 * (G.revW || 0.3)) + "%)" : "Reviews " + RVW.score + "/100") : "") + (G.voice != null ? ": customer voice " + G.voice + "/100, " + vw + "% of the CRO score." : ".");
+    var vSub = (G.shopScore != null ? (G.qScore != null ? "Buyer questions " : "Shoppers ") + G.shopScore + "/100" : "") + (RVW && RVW.score != null ? (G.shopScore != null ? ", reviews " + RVW.score + "/100 (" + Math.round(100 * (G.revW || 0.3)) + "%)" : "Reviews " + RVW.score + "/100") : "") + (G.voice != null ? ": customer voice " + G.voice + "/100, " + vw + "% of the CRO score." : ".");
     if (sh && sh.personas && sh.personas.length) {
       var rv = sh.reviews || {};
-      h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Customer voice", "4 shoppers walked your page", "Picked for who buys " + esc(clip(G.product || "this product", 60)) + ". Each read the page and said how likely they are to buy, weighted by how many shoppers like them you get. Reviews from past buyers count too. " + vSub) +
+      h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Customer voice", "4 shoppers walked your page", (G.qScore != null ? "How well the page answers the questions " + esc(clip(G.product || "this product", 60)) + " buyers ask (scored in Buyer questions below), plus what past buyers say in reviews. The 4 shoppers below show how it reads to the people who buy it. " : "Picked for who buys " + esc(clip(G.product || "this product", 60)) + ". Each read the page and said how likely they are to buy, weighted by how many shoppers like them you get. Reviews from past buyers count too. ") + vSub) +
         '<div class="sh-grid">' + sh.personas.map(rCard).join("") + "</div>" + rvRow +
         (rv.read ? '<p class="sh-rv"><b>From your reviews:</b> ' + esc(rv.summary || "") + (rv.doubts && rv.doubts.length ? " Buyers keep asking: " + esc(rv.doubts.join("; ")) + "." : "") + "</p>" : "") + "</section>";
     } else h += '<section class="rp-sec sh" id="rp-shoppers">' + head("Customer voice", "Shoppers couldn't walk this page this time", "The shopper read didn't come back for this scan (our free AI quota may be busy), so the customer voice " + (RVW && RVW.score != null ? "uses your reviews alone" : "is left out") + ". Run it again in a few minutes for the full read.") + rvRow + "</section>";
     var byG = function (a, b) { return (b.gain || 0) - (a.gain || 0); };
     var top = Pl ? Pl.cro.concat(Pl.speed).filter(function (f) { return f.gain > 0; }).sort(byG).slice(0, 3) : [];
-    if (top.length) h += '<section class="rp-sec tf" id="rp-top">' + head("Do these first", "Your top " + top.length + " fixes", "Each number is what that fix alone adds to your overall score." + (G.top3 && G.top3.to > G.top3.from ? " All " + top.length + " together: " + G.top3.from + " → " + G.top3.to + "." : "")) +
+    if (top.length && !opt.noTop) h += '<section class="rp-sec tf" id="rp-top">' + head("Do these first", "Your top " + top.length + " fixes", "Each number is what that fix alone adds to your overall score." + (G.top3 && G.top3.to > G.top3.from ? " All " + top.length + " together: " + G.top3.from + " → " + G.top3.to + "." : "")) +
       '<ol class="tf-list">' + top.map(function (f, i) {
         return '<li><span class="tf-n ' + f.kind + '">' + (i + 1) + '</span><div class="tf-b"><b>' + esc(f.t) + "</b>" + (f.ev ? "<span>" + esc(clip(f.ev, 200)) + "</span>" : "") + (f.fix ? '<span class="fx">Fix: ' + esc(f.fix) + "</span>" : "") + '</div><span class="tf-g">' + gainTxt(f.gain) + "</span></li>";
       }).join("") + "</ol></section>";
@@ -940,7 +1012,7 @@
       if (!a.length) return;
       h += '<div class="tg-qgroup"><h3 class="an-h3">' + P_LABEL[p] + ' <span class="tg-cnt">' + a.filter(function (q) { return q.g === "yes"; }).length + " of " + a.length + " answered</span></h3>" + (p === "basic" ? "<details class=\"tg-more\"><summary>Show " + a.length + " basics</summary>" + a.map(rQuestion).join("") + "</details>" : a.map(rQuestion).join("")) + "</div>";
     });
-    return '<section class="rp-sec" id="rp-questions">' + head("Buyer questions", "What " + esc(G.cat === "Other" ? "shoppers" : G.cat.toLowerCase() + " shoppers") + " ask before they pay", "The doubts " + (G.sub ? esc(G.sub.toLowerCase()) + " " : "") + "buyers have, from the Troopod barrier library" + (G.ai ? " plus questions written for this exact product" : "") + ", checked against what your page actually says. Must-solve doubts stop the sale.") + h + "</section>";
+    return '<section class="rp-sec" id="rp-questions">' + head("Buyer questions", "What " + esc(G.cat === "Other" ? "shoppers" : G.cat.toLowerCase() + " shoppers") + " ask before they pay", (G.qScore != null ? "The doubts buyers of this kind of product have before they pay, graded on your page with the words that answer them. Questions that don't apply to this product are left out. Must-solve doubts stop the sale." : G.qList ? "The doubts buyers of this kind of product have before they pay. Our AI grader didn't answer this time, so these are checked by keywords only: treat them as a first pass." : "The doubts " + (G.sub ? esc(G.sub.toLowerCase()) + " " : "") + "buyers have, from the Troopod barrier library" + (G.ai ? " plus questions written for this exact product" : "") + ", checked against what your page actually says. Must-solve doubts stop the sale.")) + h + "</section>";
   }
   var BR_NAME = { rules: "House rules", shoppers: "Customer voice", proof: "Proof on the page", clarity: "Clarity & fit", trust: "Trust & risk", price: "Price, delivery & payment", speed: "Speed on phone", flow: "Focus & flow", discover: "Search & AI", aov: "Basket size", retain: "Repeat orders" };
   var BR_Q = { clarity: "Do shoppers understand what they get and that it suits them?", trust: "Do shoppers feel safe buying here?", price: "Do shoppers see the full price, delivery date and how to pay?", speed: "Does the page load fast on a phone?", flow: "Is the path to buy clear, and does the page match the ad?", discover: "Can Google and AI assistants find you?", aov: "Does the page invite a bigger basket?", retain: "Will first-time buyers come back?" };
@@ -1008,8 +1080,14 @@
   var PL_W = 300, PL_PAGE = 262, PL_VIS = 8;
   var CHECK = '<svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0A0A0C" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   function gainTxt(g) { return g == null ? "n/a" : g === 0.5 ? "<1" : "+" + g; }
-  function rPlanRow(f, i) {
+  function rPlanRow(f, i, wb) {
     var extra = f.kind === "cro" && i >= PL_VIS;
+    if (wb) return '<div class="pl-row wbc' + (extra ? " pl-extra" : "") + '" data-fix="' + esc(f.id) + '"' + (extra ? " hidden" : "") + '><div class="pl-head">' +
+      '<button type="button" class="pl-check" aria-pressed="false" data-plan-check="' + esc(f.id) + '" aria-label="Add to plan: ' + esc(f.t) + '"><span class="pl-box">' + CHECK + "</span></button>" +
+      '<div class="wbc-main"><div class="wbc-t"><span class="pl-num ' + f.kind + '">' + esc(f.label) + '</span><b>' + esc(f.t) + '</b><span class="wbc-g ' + f.kind + (f.gain == null ? " na" : "") + '">' + (f.gain == null ? "n/a" : gainTxt(f.gain) + " pts") + "</span></div>" +
+      '<p class="wbc-meta">' + esc([BR_NAME[f.pillar], f.partly ? "partly answered" : "", f.sev].filter(Boolean).join(" · ")) + "</p>" +
+      (f.ev ? '<p class="wbc-ev"><b>Seen on the page:</b> ' + esc(f.ev) + "</p>" : "") + (f.fix ? '<div class="wbc-fix"><b>How to fix:</b> ' + esc(f.fix) + "</div>" : "") + "</div>" +
+      '<div class="wbc-act"><button type="button" class="wbc-pin" data-plan-open="' + esc(f.id) + '">Pin ' + esc(f.label) + '</button><button type="button" class="wbc-copy" data-wb-copy="' + esc((f.t + ". " + (f.fix || "")).slice(0, 400)) + '">Copy</button></div></div></div>';
     return '<div class="pl-row' + (extra ? " pl-extra" : "") + '" data-fix="' + esc(f.id) + '"' + (extra ? " hidden" : "") + '><div class="pl-head">' +
       '<button type="button" class="pl-check" aria-pressed="false" data-plan-check="' + esc(f.id) + '" aria-label="Add to plan: ' + esc(f.t) + '"><span class="pl-box">' + CHECK + "</span></button>" +
       '<button type="button" class="pl-open" aria-expanded="false" data-plan-open="' + esc(f.id) + '"><span class="pl-num ' + f.kind + '">' + esc(f.label) + '</span><span class="pl-t">' + esc(f.t) + "</span>" +
@@ -1030,8 +1108,9 @@
     return out;
   }
   function vitTone(v, good, poor) { return v == null ? "" : v <= good ? "good" : v <= poor ? "mid" : "bad"; }
-  function rPlan(G, R) {
+  function rPlan(G, R, wb) {
     var Pl = G.plan; if (!Pl || !(Pl.cro.length + Pl.speed.length)) return "";
+    var row = function (f, i) { return rPlanRow(f, i, wb); };
     var V = Pl.vit, vit = "";
     if (Pl.est || !V) vit = '<p class="pl-vnote">Google PageSpeed didn\'t answer in time for this scan, so speed is estimated from the page\'s code. Run the analysis again for real numbers.</p>';
     else {
@@ -1045,12 +1124,13 @@
       '<button type="button" role="tab" aria-selected="false" data-plan-tab="speed"><span class="pl-tl"><i class="pl-dot speed"></i>Speed fixes <em>' + Pl.speed.length + '</em></span><span class="pl-up">' + (Pl.est ? "estimated" : "up to +" + Pl.upSpeed) + "</span></button></div>";
     var side = '<div class="pl-side">' + tabs + '<div class="pl-vits" data-plan-vitals hidden>' + vit + "</div>" +
       '<div class="pl-hint"><p>Tick to add to your plan. Tap a fix to see why.</p><button type="button" class="pl-all" data-plan-all>Tick all CRO fixes</button></div>' +
-      '<div class="pl-list" data-plan-list="cro">' + (nCro ? Pl.cro.map(rPlanRow).join("") + more : '<p class="pl-empty">No CRO fixes left on this page.</p>') + "</div>" +
-      '<div class="pl-list" data-plan-list="speed" hidden>' + (Pl.speed.length ? Pl.speed.map(rPlanRow).join("") : '<p class="pl-empty">No speed problems flagged. Nice.</p>') + "</div></div>";
+      '<div class="pl-list" data-plan-list="cro">' + (nCro ? Pl.cro.map(row).join("") + more : '<p class="pl-empty">No CRO fixes left on this page.</p>') + "</div>" +
+      '<div class="pl-list" data-plan-list="speed" hidden>' + (Pl.speed.length ? Pl.speed.map(row).join("") : '<p class="pl-empty">No speed problems flagged. Nice.</p>') + "</div></div>";
     var H = R.pageH && R.regions ? Math.min(R.pageH, 6000) : 0, S = PL_PAGE / 390, shot = R.psi && R.psi.shots && R.psi.shots.final;
     var screen = H ? '<div class="pl-canvas" data-plan-canvas data-h="' + H + '" style="height:' + Math.round(H * S) + 'px"><i class="pl-gutter" aria-hidden="true"></i><i class="pl-hl" data-plan-hl hidden></i>' + plPins(Pl.cro, R) + plPins(Pl.speed, R) + "</div>"
       : '<div class="pl-canvas fallback">' + (shot ? '<img src="' + esc(shot) + '" alt="Your page on a phone, as Google loaded it">' : '<p>We couldn\'t draw this page here.</p>') + "</div>";
     var phone = '<div class="pl-phone-col"><div class="pl-phone"><div class="pl-screen" data-plan-screen>' + screen + '</div></div><p class="pl-note" data-plan-note>' + (H ? "Your page on a phone, drawn without its scripts. Tap a number." : "We couldn't map where each problem sits on this page, so the list carries everything.") + "</p></div>";
+    if (wb) return { side: side, phone: phone };
     return '<section class="rp-sec" id="rp-plan" data-plan>' + head("Your fixes", "Plan your fixes on the page itself", "Tick the fixes you'll make and the CRO, Speed and overall scores above update. The number on each fix is what it adds to the overall score on its own; fixes on the same pillar add a little less together. Estimates from the TrooCRO score model.") +
       '<div class="pl-wrap">' + side + phone + "</div></section>";
   }
@@ -1066,10 +1146,12 @@
     nav.push(["rp-questions", "Buyer questions", G.qs.filter(function (q) { return q.g === "no"; }).length], ["rp-levers", "Growth levers", G.levers.length]);
     if (G.peers.length) nav.push(["rp-peers", "Vs category leaders", G.peers.length]);
     if (G.confirm.length) nav.push(["rp-confirm", "Confirm with your team", G.confirm.length]);
-    return { html: html, nav: nav, services: rServices(G), short: rShort(G, R) };
+    var wb = G.scoreV === 4 && !G.unread ? { plan: rPlan(G, R, true), voice: rShort(G, R, { noTop: true }), questions: rQuestions(G), growth: rSnapshot(G, R) + rLevers(G) + rPeers(G) + rConfirm(G) } : null;
+    return { html: html, nav: nav, services: rServices(G), short: rShort(G, R), wb: wb };
   }
   function wirePlan(root, G, opts) {
     var sec = root.querySelector("[data-plan]"); if (!sec || !G || !G.plan) return;
+    var WB = sec.hasAttribute("data-wb");
     var Pl = G.plan, on = (Pl.defaultOn || []).slice(), tab = "cro", open = null, more = false;
     function q(sel, r) { return (r || root).querySelector(sel); }
     function qa(sel, r) { return Array.prototype.slice.call((r || root).querySelectorAll(sel)); }
@@ -1081,6 +1163,16 @@
       qa("[data-plan-check]").forEach(function (btn) { var id = btn.getAttribute("data-plan-check"), x = on.indexOf(id) >= 0; btn.setAttribute("aria-pressed", x ? "true" : "false"); var row = btn.closest(".pl-row"); if (row) row.classList.toggle("on", x); });
       qa("[data-plan-pin]").forEach(function (p) { p.classList.toggle("picked", on.indexOf(p.getAttribute("data-plan-pin")) >= 0); });
       setHTML("[data-plan-cro]", arrow(b.cro, pr.cro)); setHTML("[data-plan-speed]", arrow(b.speed, pr.speed));
+      if (WB) {
+        setHTML("[data-wb-to]", String(pr.overall)); setHTML("[data-wb-up]", d > 0 ? "+" + d + " pts" : "no change");
+        qa("[data-wb-ring]").forEach(function (el) { el.style.setProperty("--to", (pr.overall || 0) + ""); });
+        setHTML("[data-wb-n]", on.length + (on.length === 1 ? " fix" : " fixes"));
+        qa("[data-wb-cro-to]").forEach(function (el) { el.style.width = (pr.cro || 0) + "%"; }); qa("[data-wb-sp-to]").forEach(function (el) { el.style.width = (pr.speed || 0) + "%"; });
+        setHTML("[data-wb-cro-v]", arrow(b.cro, pr.cro)); setHTML("[data-wb-sp-v]", arrow(b.speed, pr.speed));
+        qa("[data-wb-mode-to]").forEach(function (el) { el.textContent = "With fixes (" + pr.overall + ")"; });
+        sec.setAttribute("data-lift", b.cro && pr.cro ? Math.max(0, (pr.cro - b.cro) / b.cro) : 0);
+        if (typeof sec.wbCalc === "function") sec.wbCalc();
+      }
       qa("[data-plan-cro-bar]").forEach(function (el) { el.style.width = (pr.cro || 0) + "%"; }); qa("[data-plan-speed-bar]").forEach(function (el) { el.style.width = (pr.speed || 0) + "%"; });
       qa("[data-plan-line]").forEach(function (el) {
         el.hidden = false;
@@ -1106,7 +1198,8 @@
     }
     function setOpen(id, fromPin) {
       open = open === id && !fromPin ? null : id;
-      qa(".pl-row").forEach(function (r) { var x = r.getAttribute("data-fix") === open; r.classList.toggle("open", x); var bd = q(".pl-body", r); if (bd) bd.hidden = !x; var ob = q("[data-plan-open]", r); if (ob) ob.setAttribute("aria-expanded", x ? "true" : "false"); });
+      qa(".pl-row").forEach(function (r) { var x = r.getAttribute("data-fix") === open; r.classList.toggle("open", x); var bd = q(".pl-body", r); if (bd && !WB) bd.hidden = !x; var ob = q("[data-plan-open]", r); if (ob) ob.setAttribute("aria-expanded", x ? "true" : "false"); });
+      if (WB) { var hc = q("[data-wb-hot]"), fx = open ? Pl.cro.concat(Pl.speed).filter(function (x) { return x.id === open; })[0] : null; if (hc) { hc.hidden = !fx; if (fx) hc.innerHTML = '<span class="wb-hot-k">Pin ' + esc(fx.label) + " · " + esc(BR_NAME[fx.pillar] || (fx.kind === "speed" ? "Speed" : "CRO")) + "</span><b>" + esc(fx.t) + "</b>" + (fx.ev ? "<p>" + esc(clip(fx.ev, 220)) + "</p>" : ""); } }
       qa("[data-plan-pin]").forEach(function (p) { p.classList.toggle("on", p.getAttribute("data-plan-pin") === open); });
       var hlb = q("[data-plan-hl]"), pin0 = open ? q('[data-plan-pin="' + open + '"]') : null;
       if (hlb) {
@@ -1128,6 +1221,9 @@
       if ((id = t.getAttribute("data-plan-open"))) { setOpen(id); return; }
       if ((id = t.getAttribute("data-plan-pin"))) { var f = Pl.cro.concat(Pl.speed).filter(function (x) { return x.id === id; })[0]; if (f && f.kind !== tab) setTab(f.kind); setOpen(id, true); return; }
       if ((id = t.getAttribute("data-plan-tab"))) { setTab(id); return; }
+      if ((id = t.getAttribute("data-wb-copy"))) { try { navigator.clipboard.writeText(id); t.textContent = "Copied"; setTimeout(function () { t.textContent = "Copy"; }, 1400); } catch (e2) { /* ignore */ } return; }
+      if ((id = t.getAttribute("data-wb-mode"))) { sec.setAttribute("data-phone", id); qa("[data-wb-mode]").forEach(function (b2) { b2.setAttribute("aria-pressed", b2 === t ? "true" : "false"); }); return; }
+      if ((id = t.getAttribute("data-wb-locate"))) { var f2 = Pl.cro.concat(Pl.speed).filter(function (x) { return x.id === id; })[0]; if (f2 && f2.kind !== tab) setTab(f2.kind); setOpen(id, true); var ph = q("[data-plan-screen]"); if (ph && ph.scrollIntoView && win.innerWidth < 1100) ph.scrollIntoView({ block: "center", behavior: "smooth" }); return; }
       if (t.hasAttribute("data-plan-more")) { more = true; qa(".pl-extra").forEach(function (x) { if (!x.classList.contains("pl-pin") || x.getAttribute("data-kind") === tab) x.hidden = false; }); t.remove(); return; }
       if (t.hasAttribute("data-plan-all")) { var a = ids(tab), allOn = a.every(function (x) { return on.indexOf(x) >= 0; }); on = allOn ? on.filter(function (x) { return a.indexOf(x) < 0; }) : on.concat(a.filter(function (x) { return on.indexOf(x) < 0; })); if (!allOn && !more) { var mb = q("[data-plan-more]"); if (mb) mb.click(); } upd(); return; }
     });
@@ -1171,12 +1267,12 @@
   function markdown(G) {
     if (!G) return "";
     var md = "\n## TrooGrowth\n\n" + "Overall " + G.score + "/100 (CRO " + G.cro + "/100, " + G.croW + "%; speed " + G.speed + "/100, " + G.speedW + "%).\n\n" + (G.one ? "**Biggest problem:** " + G.one.text + "\n\n" : "") +
-      (G.scoreV === 4 && G.shop ? "### Customer voice (" + (G.voice != null ? G.voice : G.shopScore) + "/100: shoppers " + G.shopScore + (G.reviews && G.reviews.score != null ? ", reviews " + G.reviews.score : "") + ")\n" + G.shop.personas.map(function (p) { return "- **" + p.n + "** (" + p.fit + "% of shoppers): " + p.buy + "/100. \u201c" + p.leave + "\u201d" + (p.fix && p.fix.change ? " Fix: " + p.fix.change : ""); }).join("\n") + "\n\n" : "") +
+      (G.scoreV === 4 && G.shop ? "### Customer voice (" + (G.voice != null ? G.voice : G.shopScore) + "/100: " + (G.qScore != null ? "buyer questions " : "shoppers ") + G.shopScore + (G.reviews && G.reviews.score != null ? ", reviews " + G.reviews.score : "") + ")\n" + G.shop.personas.map(function (p) { return "- **" + p.n + "** (" + p.fit + "% of shoppers): " + p.buy + "/100. \u201c" + p.leave + "\u201d" + (p.fix && p.fix.change ? " Fix: " + p.fix.change : ""); }).join("\n") + "\n\n" : "") +
       (G.scoreV === 4 && G.rules ? "### House rules (" + G.rulesScore + "/100)\n" + G.rules.map(function (r) { return "- [" + r.st + "] " + r.t + ": " + r.ev; }).join("\n") + "\n\n" : "") + "Category: " + G.cat + (G.sub ? " > " + G.sub : "") + ". Season: " + G.season.name + ".\n\n### Three things this week\n" + G.week.map(function (w, i) { return (i + 1) + ". " + w.title + " (" + (BR_NAME[w.branch] || "") + ")"; }).join("\n") + "\n\n### Buyer questions\n";
     G.qs.forEach(function (q) { md += "- [" + G_LABEL[q.g] + "] " + q.q + (q.g !== "yes" && q.fix ? " Fix: " + q.fix : "") + "\n"; });
     md += "\n### Growth levers\n"; G.levers.forEach(function (l) { md += l.rank + ". " + l.name + ": " + l.score + "/100, 10% better is worth " + moneyFmt(l.inr10, G.money.cur) + "/month\n"; });
     return md;
   }
 
-  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, NAMES: BR_NAME, project: project };
+  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, qList: qList, NAMES: BR_NAME, project: project };
 })();

@@ -83,7 +83,7 @@
   var CONSUMABLE = { "Beauty & Personal Care": 1, "Health & Wellness": 1, "Food & Beverages": 1, "Pet Care": 1, "Baby & Kids": 1 };
 
   /* ---------------- buyer questions: the category's barrier library, graded on the page ---------------- */
-  var GSCORE = { yes: 1, partly: 0.5, no: 0 };
+  var GSCORE = { yes: 1, partly: 0.3, no: 0 };
   function checksByBarrier(R) {
     var L = (R.lib && R.lib.signals) || {}, map = {};
     (R.checks || []).forEach(function (c) {
@@ -185,51 +185,36 @@
     return clamp(Math.round((base == null ? 100 : base) - pen), 0, 100);
   }
 
-  /* Discover: can Google and AI assistants find and understand the store? */
+  /* Discover: can Google and AI assistants find and understand this page? Read from the page itself
+     (plus robots.txt, llms.txt and the sitemap, which decide whether this page gets read at all). */
+  var DFIX = {
+    ai_search_allowed: "Allow AI search bots (ChatGPT, Perplexity, Claude) in robots.txt. Training bots can stay blocked.",
+    llms_txt: "Add an llms.txt with your categories, best sellers and policies.",
+    sitemap: "Publish a sitemap and submit it in Google Search Console.",
+    jsonld: "Add JSON-LD structured data for the product, brand and breadcrumbs.",
+    org_schema: "Add Organization schema with your logo and social profiles.",
+    product_schema: "Add Product schema with price, availability, brand and rating.",
+    meta_description: "Write a 140 to 155 character description with the main benefit and offer.",
+    title: "Keep the title under 60 characters, product first, brand last.",
+    single_h1: "Use one H1 that names the product.",
+    canonical: "Add a canonical tag pointing to this page's main address.",
+    og: "Add og:title and og:image so links look right on WhatsApp and social.",
+    ssr_text: "Render the main content in the HTML; most AI bots don't run JavaScript.",
+  };
   function discover(R, ctx) {
-    var c = ctx.crawl, items = [], psi = R.psi || {};
-    if (!c || !c.pages) {
-      var ai = R.ai || {};
-      (ai.checks || []).forEach(function (x) { if (!x.pass) items.push(item("ai_" + (x.key || x.label), x.label, "warn", x.detail || "", "", "seen", 2)); });
-      return { score: ai.readiness != null ? ai.readiness : null, items: items, note: "Read from your homepage only: the site crawl didn't finish." };
-    }
-    var P = c.pages.filter(function (p) { return p.status === 200 && p.titleLen != null; }), n = P.length || 1;
-    var prods = P.filter(function (p) { return p.kind === "product"; }), np = prods.length;
-    if (!c.sitemap) items.push(item("sitemap", "No sitemap for search engines", "bad", "We couldn't find /sitemap.xml or a sitemap in robots.txt.", "Publish a sitemap and submit it in Google Search Console.", "seen", 3));
-    var aiSearch = (c.aiBlocked || []).filter(function (b) { return /ChatGPT-User|OAI-SearchBot|PerplexityBot|Claude-SearchBot|Claude-User|Perplexity-User/.test(b); });
-    if (aiSearch.length) items.push(item("ai_block", "AI assistants are blocked from reading the site", "bad", "robots.txt blocks " + aiSearch.join(", ") + ", so ChatGPT and Perplexity can't recommend your products.", "Allow AI search bots in robots.txt (training bots can stay blocked).", "seen", 3));
-    else if ((c.aiBlocked || []).length) items.push(item("ai_train", "Some AI crawlers are blocked", "ok", "Blocked: " + c.aiBlocked.join(", ") + ". Search assistants can still read the site.", "", "seen", 1));
-    if (!c.llms) items.push(item("llms", "No llms.txt for AI assistants", "warn", "AI assistants look for /llms.txt to understand a store quickly.", "Add an llms.txt with your categories, best sellers and policies.", "seen", 1));
-    var noTitle = P.filter(function (p) { return !p.titleLen; }).length, longT = P.filter(function (p) { return p.titleLen > 65; }).length;
-    var titles = {}, dup = 0; P.forEach(function (p) { var k = (p.title || "").toLowerCase(); if (k) { if (titles[k]) dup++; titles[k] = 1; } });
-    if (noTitle) items.push(item("title_missing", "Pages without a title", "bad", noTitle + " of " + n + " pages we sampled have no title.", "Give every page a unique title with the product and category words people search.", "seen", 3));
-    if (dup) items.push(item("title_dup", "Pages share the same title", "warn", dup + " of " + n + " sampled pages repeat another page's title.", "Write a unique title per page.", "seen", 2));
-    if (longT > n / 3) items.push(item("title_long", "Titles get cut off in Google", "warn", longT + " of " + n + " titles are longer than 65 characters.", "Keep titles under 60 characters, product first, brand last.", "seen", 1));
-    var noDesc = P.filter(function (p) { return !p.desc; }).length;
-    if (noDesc) items.push(item("desc", "Pages without a meta description", noDesc > n / 3 ? "warn" : "ok", noDesc + " of " + n + " pages have no description, so Google writes its own snippet.", "Write a 140 to 155 character description per page with the main benefit and offer.", "seen", 2));
-    var noindex = P.filter(function (p) { return p.noindex && (p.kind === "product" || p.kind === "collection" || p.kind === "home"); });
-    if (noindex.length) items.push(item("noindex", "Shopping pages hidden from Google", "bad", noindex.length + " product or collection pages say noindex: " + noindex.slice(0, 2).map(function (p) { return p.url.replace(/^https?:\/\/[^/]+/, ""); }).join(", ") + ".", "Remove noindex from pages you want found.", "seen", 3));
-    var canonOther = P.filter(function (p) { return p.canon === "other"; }).length, canonNone = P.filter(function (p) { return p.canon === "none"; }).length;
-    if (canonNone > n / 3) items.push(item("canon", "Pages without a canonical link", "warn", canonNone + " of " + n + " pages don't say which address is the main one.", "Add a self-referencing canonical tag to every page.", "seen", 2));
-    if (canonOther > n / 3) items.push(item("canon_other", "Pages point Google to another address", "warn", canonOther + " of " + n + " sitemap pages name a different canonical address.", "List only canonical addresses in the sitemap.", "seen", 2));
-    var badH1 = P.filter(function (p) { return p.h1 !== 1; }).length;
-    if (badH1 > n / 3) items.push(item("h1", "Pages without exactly one main heading", "warn", badH1 + " of " + n + " pages have no H1 or more than one.", "One H1 per page that names the product or category.", "seen", 1));
-    if (np) {
-      var noProd = prods.filter(function (p) { return (p.types || []).indexOf("Product") < 0 && (p.types || []).indexOf("ProductGroup") < 0; }).length;
-      var noRate = prods.filter(function (p) { return !p.rating; }).length, noFaq = prods.filter(function (p) { return !p.faq; }).length;
-      if (noProd) items.push(item("schema_product", "Product pages Google can't read as products", "bad", noProd + " of " + np + " product pages have no Product schema, so no price or stock in search results.", "Add Product schema with price, availability and brand.", "seen", 3));
-      if (noRate === np) items.push(item("schema_rating", "No review stars in Google results", "warn", "None of the " + np + " product pages we sampled share their rating with search engines.", "Add aggregateRating to Product schema (most review apps can do this).", "seen", 2));
-      if (noFaq > np / 2) items.push(item("schema_faq", "Product pages don't answer questions in a way AI can quote", "warn", noFaq + " of " + np + " product pages have no FAQ schema.", "Add 4 to 6 real buyer questions per product page with FAQ schema.", "seen", 2));
-    }
-    var imgs = P.reduce(function (s, p) { return s + (p.imgs || 0); }, 0), noAlt = P.reduce(function (s, p) { return s + (p.noAlt || 0); }, 0);
-    if (imgs > 20 && noAlt / imgs > 0.25) items.push(item("alt", "Images without descriptions", "warn", pct(noAlt, imgs) + "% of images on the sampled pages have no alt text, so image search and screen readers skip them.", "Describe every product image in its alt text.", "seen", 1));
-    var blogs = (c.counts && c.counts.blog) || 0;
-    if (blogs < 5) items.push(item("content", "Few articles answering buyer questions", "warn", (blogs ? "Only " + blogs + " blog or guide pages" : "No blog or guide pages") + " in the sitemap. AI answers quote pages that explain things.", "Publish guides that answer the top buyer questions in this report.", "seen", 2));
-    var bad200 = c.pages.length - P.length;
-    if (bad200 > 0) items.push(item("errors", "Pages that didn't load", bad200 > 3 ? "warn" : "ok", bad200 + " of " + c.pages.length + " sampled pages returned an error or blocked us.", "Fix or redirect broken sitemap links.", "seen", 1));
-    var base = scoreItems(items);
-    var seo = psi.scores && psi.scores.seo;
-    return { score: seo != null ? Math.round(0.7 * base + 0.3 * seo) : base, items: items, note: "We read " + n + " pages from your sitemap" + (c.sitemapUrls ? " (" + c.sitemapUrls + " listed)" : "") + (c.blocked ? ", skipping " + c.blocked + " that robots.txt asks us not to read" : "") + "." + (seo != null ? " Google's SEO score for this page: " + seo + "/100." : "") };
+    var ai = R.ai || {}, P = R.page || {}, items = [], psi = R.psi || {};
+    (ai.checks || []).forEach(function (x) {
+      var sev = x.weight >= 3 ? 3 : x.weight >= 2 ? 2 : 1;
+      items.push(item("d_" + x.key, x.label, x.pass ? "ok" : sev >= 3 ? "bad" : "warn", x.detail || "", x.pass ? "" : (DFIX[x.key] || ""), "seen", sev));
+    });
+    var types = ai.ldTypes || [];
+    if ((P.pageType === "PDP" || P.pageType === "HOME") && types.indexOf("FAQPage") < 0) items.push(item("d_faq", "No FAQ schema for AI answers to quote", "warn", "AI assistants quote pages that answer questions in a clear format.", "Add 4 to 6 real buyer questions with FAQ schema.", "seen", 2));
+    var im = P.images || {};
+    if (im.total > 5 && im.missingAlt / im.total > 0.25) items.push(item("d_alt", "Images without descriptions", "warn", im.missingAlt + " of " + im.total + " images have no alt text.", "Describe every product image in its alt text.", "seen", 1));
+    var base = ai.readiness != null ? ai.readiness : scoreItems(items), seo = psi.scores && psi.scores.seo;
+    var extra = items.filter(function (i) { return /^d_(faq|alt)$/.test(i.k); }).reduce(function (s, i) { return s + (i.sev >= 2 ? 6 : 3); }, 0);
+    base = Math.max(0, base - extra);
+    return { score: seo != null ? Math.round(0.7 * base + 0.3 * seo) : base, items: items, note: "This page only: title, description, schema, headings, and whether Google and AI assistants can read it." + (seo != null ? " Google's SEO score for this page: " + seo + "/100." : "") };
   }
 
   /* Land: does the page load fast and match what brought the visitor? */
@@ -255,7 +240,7 @@
     var mob = p.scores.performance, desk = d && d.scores ? d.scores.performance : null;
     var score = Math.round(0.7 * mob + 0.1 * (desk != null ? desk : mob) + 0.2 * (a11y != null ? a11y : 80));
     if (ctx.adMatch && ctx.adMatch.g === "no") score = Math.max(0, score - 15);
-    return { score: score, items: items, note: "Google PageSpeed, average of " + runs + (runs === 1 ? " run" : " runs") + " on a mid-range phone: " + mob + "/100" + (desk != null ? "; desktop " + desk + "/100" : "") + "." };
+    return { score: score, items: items, note: "Google PageSpeed for this page on a mid-range phone: " + mob + "/100" + (desk != null ? "; desktop " + desk + "/100" : "") + "." };
   }
 
   /* Trust: does anything on the page undercut itself? */
@@ -427,13 +412,20 @@
     var all = pq.concat(qs).filter(function (q) { return q.g !== "confirm"; });
     var wsum = all.reduce(function (s, q) { return s + q.w; }, 0), qscore = wsum ? Math.round(100 * all.reduce(function (s, q) { return s + q.w * GSCORE[q.g]; }, 0) / wsum) : null;
     var croS = R.cro && R.cro.score != null ? R.cro.score : null;
-    B.convert = { score: qscore == null ? croS : croS == null ? qscore : Math.round(0.5 * qscore + 0.5 * croS), items: [], note: (qscore != null ? "Buyer questions answered: " + qscore + "/100" : "") + (croS != null ? (qscore != null ? ". " : "") + "Page layout benchmark: " + croS + "/100" : "") + "." };
+    B.convert = { score: qscore == null ? croS : croS == null ? qscore : Math.round(0.6 * qscore + 0.4 * croS), items: [], note: (qscore != null ? "Buyer questions answered: " + qscore + "/100" : "") + (croS != null ? (qscore != null ? ". " : "") + "Page layout benchmark: " + croS + "/100" : "") + "." };
     pq.concat(qs).filter(function (q) { return q.g === "no" || q.g === "partly"; }).sort(function (a, b) { return (b.w * (b.g === "no" ? 2 : 1)) - (a.w * (a.g === "no" ? 2 : 1)); }).slice(0, 5).forEach(function (q) {
       B.convert.items.push(item("q_" + q.id, q.q, q.g === "no" ? "bad" : "warn", q.ev[0] || "", q.fix, q.tag, q.p === "must" ? 3 : 2));
     });
     B.trust = trust(R, ctx, qs);
     if (!lead) { B.aov = orderValue(R, ctx, money, cat); B.retain = retain(R, ctx, cat); }
     var L = levers(B, money, I, season);
+    /* the headline Growth score: barrier-led, from the six levers, minus 3 for each Must-solve question the page
+       leaves unanswered (up to 15) */
+    var WTS = { convert: 35, land: 20, trust: 15, discover: 15, aov: 7.5, retain: 7.5 }, tw = 0, tv = 0, parts = [];
+    Object.keys(WTS).forEach(function (k) { var b = B[k]; if (b && b.score != null) { tw += WTS[k]; tv += WTS[k] * b.score; parts.push({ id: k, w: WTS[k], v: b.score, est: !!b.est }); } });
+    var mustNo = pq.concat(qs).filter(function (q) { return q.g === "no" && q.p === "must"; }).length;
+    var penalty = Math.min(15, 3 * mustNo);
+    var gscore = tw ? Math.max(0, Math.round(tv / tw - penalty)) : null;
     // biggest problem in one line
     var SOFT = { B06: 1, B17: 1, B18: 1, B19: 1, B21: 1, B25: 1, B66: 1, B68: 1, B65: 1 };
     var topQ = pq.concat(qs).filter(function (q) { return q.g === "no" && q.p === "must" && !SOFT[q.id]; }).sort(function (a, b) { return (b.w + (b.checks && b.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (b.src === "product" ? 1 : 0)) - (a.w + (a.checks && a.checks.some(function (c) { return c.st === "fail"; }) ? 1.5 : 0) + (a.src === "product" ? 1 : 0)); })[0];
@@ -466,6 +458,7 @@
     return {
       v: 1, at: new Date().toISOString(), cat: cat, sub: sub, catSrc: catSrc, market: mk, season: season, lead: lead,
       product: (ctx.insight && ctx.insight.product) || prod.title || P.title || "", buyer: (ctx.insight && ctx.insight.buyer) || "",
+      score: gscore, scoreParts: parts.map(function (x) { return { id: x.id, w: Math.round(1000 * x.w / tw) / 10, v: x.v, est: x.est }; }), penalty: penalty, mustNo: mustNo, qScore: qscore, layout: croS,
       one: one, qs: pq.concat(qs), branches: B, money: money, levers: L, week: week, confirm: confirm.slice(0, 8), you: you, peers: peers, services: svc,
       inputs: { goal: I.goal || "conversion", traffic: I.traffic || "", ad: I.ad || "" }, ai: !!(ctx.insight && ctx.insight.questions),
       reads: { crawl: !!(ctx.crawl && ctx.crawl.pages), trust: !!(tr.facts), insight: !!(ctx.insight && ctx.insight.questions), peers: peers.length, side: !!ctx.side },

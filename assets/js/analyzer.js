@@ -696,16 +696,15 @@
     ["lcp", "fcp", "cls", "tbt", "si", "ttfb", "weightKb", "requests"].forEach(function (k) { var v = list.map(function (d) { return d.metrics && d.metrics[k]; }).filter(function (x) { return typeof x === "number"; }); if (v.length) { var m = v.reduce(function (s, x) { return s + x; }, 0) / v.length; out.metrics[k] = k === "cls" ? Math.round(m * 1000) / 1000 : Math.round(m); } });
     return out;
   }
-  /* Google PageSpeed with our key: one mobile lane and one desktop lane, each running up to 3 runs back to back
-     (parallel runs on the same URL slow Google down and some stores rate-limit them). Averages whatever finished
-     by the deadline. If nothing comes back, S.psiErr keeps Google's reason so the report can say it. */
+  /* Google PageSpeed with our key: one run on mobile and one on desktop, for the page that was entered.
+     A run that fails is retried once if there's time. If nothing comes back, S.psiErr keeps Google's reason. */
   function runPsi(url) {
     var skipP = new Promise(function (res) { S.psiSkip = function () { res(null); }; });
     S.psiErr = "";
     if (!win.TrooPSI || !win.AbortController) return Promise.resolve(null);
-    var key = CFG.psiKey || "", N = key ? 3 : 1, t0 = Date.now(), res = { mobile: [], desktop: [] }, errs = [];
+    var key = CFG.psiKey || "", N = 1, t0 = Date.now(), res = { mobile: [], desktop: [] }, errs = [];
     function one(strategy) {
-      var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 80000);
+      var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 150000);
       return fetch(win.TrooPSI.psiUrl(url, strategy, key), { signal: ctl.signal })
         .then(function (r) { return r.json().catch(function () { return null; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
         .then(function (x) {
@@ -714,13 +713,13 @@
           var msg = x.d && x.d.error && x.d.error.message ? String(x.d.error.message) : "HTTP " + x.status;
           return { err: msg };
         })
-        .catch(function (e) { clearTimeout(t); return { err: e && e.name === "AbortError" ? "Google took longer than 80 seconds" : "Couldn't reach Google PageSpeed" }; });
+        .catch(function (e) { clearTimeout(t); return { err: e && e.name === "AbortError" ? "Google took longer than 2.5 minutes to load this page" : "Couldn't reach Google PageSpeed" }; });
     }
     function lane(strategy) {
       return new Promise(function (resolve) {
         var n = 0, fails = 0;
         (function next() {
-          if (n >= N || fails >= 2 || Date.now() - t0 > 60000) return resolve();
+          if (res[strategy].length >= N || fails >= 2 || Date.now() - t0 > 60000) return resolve();
           n++;
           one(strategy).then(function (x) {
             if (x.d && x.d.scores && x.d.scores.performance != null) res[strategy].push(x.d);
@@ -730,7 +729,9 @@
         })();
       });
     }
-    var p = Promise.race([Promise.all([lane("mobile"), lane("desktop")]), sleep(105000)]).then(function () {
+    var mobL = lane("mobile"), deskL = lane("desktop");
+    /* desktop is secondary: once mobile is in, give desktop 20 more seconds at most */
+    var p = Promise.race([Promise.all([mobL, deskL]), mobL.then(function () { return res.mobile.length ? sleep(20000) : deskL; }), sleep(160000)]).then(function () {
       var m = avgPsi(res.mobile);
       if (m) { var d = avgPsi(res.desktop); if (d) m.desktop = { scores: d.scores, metrics: d.metrics, runs: d.runs }; }
       else S.psiErr = errs[0] || "Google PageSpeed didn't answer in time";
@@ -748,7 +749,7 @@
   }
   function startGrowthReads() {
     var gx = S.gx = { t0: Date.now() };
-    gx.crawlP = gapi("/crawl?url=" + encodeURIComponent(S.url), null, 70000);
+    gx.crawlP = Promise.resolve(null); // search checks come from the entered page itself
     gx.trustP = gapi("/trust", { url: S.url }, 50000);
     gx.textP = S.viewP.then(function (v) { return v && v.html && win.TrooGrowth ? win.TrooGrowth.pageText(v.html) : null; }).catch(function () { return null; });
     return gx;
@@ -818,16 +819,8 @@
     S.sideTxt = ""; S.sideMain = "";
     S.psiP = runPsi(S.url);
     startGrowthReads();
-    /* a second page of the same site: the homepage for a product page, one product page for anything else */
-    S.sideP = Promise.all([S.viewP, S.croP]).then(function (x) {
-      var v = x[0], m0 = x[1];
-      if (!v || !v.html || !m0 || !m0.f || isLeadPage(m0.f, null)) return null;
-      var base = v.url || S.url, link, type;
-      if (/\/products?\/|\/p\/|\/dp\//i.test(S.url)) { type = "HOME"; try { link = new URL("/", base).href; } catch (e) { link = null; } }
-      else { type = "PDP"; link = productLinkOf(v.html, base); }
-      if (!link) return null;
-      return fetchView(link).then(function (pv) { if (pv && pv.html && win.TrooGrowth) { var stx = win.TrooGrowth.pageText(pv.html); S.sideTxt = stx.all.slice(0, 40000); S.sideMain = stx.main.slice(0, 20000); } return pv && pv.html ? measureCro(pv.html) : null; }).then(function (m) { return m && m.f ? { f: m.f, url: link, type: type } : null; });
-    }).catch(function () { return null; });
+    /* only the page that was entered is analysed (no second page of the site) */
+    S.sideP = Promise.resolve(null);
     buildStages();
     warmStart();
     S.viewP.then(function (v) { if (v && v.html && S.running) mountReal(v); else viewDone(false); });
@@ -1035,7 +1028,7 @@
     S.report = buildReport(r, psi, comps);
     var croM = await Promise.race([S.croP, sleep(16000).then(function () { return null; })]);
     var pType = (r.page || {}).pageType, lead = !!(r.page && r.page.lead) || (croM && croM.f && isLeadPage(croM.f, r.page)), sideM = null;
-    if (croM && croM.f && !lead) {
+    if (false) {
       sideM = await Promise.race([S.sideP, sleep(12000).then(function () { return null; })]);
       if (sideM) addFeed("act", pType === "PDP" ? "Checked your homepage too" : "Checked one of your product pages too", "Two pages of the same site rank stores far more reliably than one", "", "plan");
     }
@@ -1075,7 +1068,7 @@
     $("[data-s-verdict]").textContent = C.verdict;
     $("[data-s-done]").hidden = false;
     setTimeout(function () { setMiniScore(C.total); }, 60);
-    addFeed("pass", "Report ready", "Website score " + (C.total != null ? C.total + "/100" : "n/a"), "", "plan");
+    addFeed("pass", "Report ready", (C.growth ? "Growth score " : "Website score ") + (C.total != null ? C.total + "/100" : "n/a"), "", "plan");
     S.running = false;
     saveReport();
     var openBtn = $("[data-s-open]");
@@ -1657,9 +1650,16 @@
     return x;
   }
 
+  var LEVER_NAME = { convert: "Convert", land: "Land (speed)", trust: "Trust", discover: "Discover (search, AI)", aov: "Order value", retain: "Retain" };
   function compute(R) {
     var areas = [];
     rescore(R);
+    if (R.growth && R.growth.score != null) {
+      var G = R.growth, gt = G.score;
+      G.scoreParts.forEach(function (p) { areas.push({ key: p.id, name: LEVER_NAME[p.id] || p.id, w: p.w, v: p.v, est: p.est, src: p.id === "convert" ? "Buyer questions " + (G.qScore != null ? G.qScore : "n/a") + "/100 (60%) and page layout " + (G.layout != null ? G.layout : "n/a") + "/100 (40%)" : "" }); });
+      var gv = gt >= 80 ? "Strong. Small gains left." : gt >= 65 ? "Good, with clear room to grow." : gt >= 45 ? (G.lead ? "Average. Sign-ups are slipping away." : "Average. Real sales are slipping away.") : (G.lead ? "Needs work. Visitors are hitting walls." : "Needs work. Shoppers are hitting walls.");
+      return { areas: areas, total: gt, est: G.scoreParts.some(function (p) { return p.est; }), verdict: gv, growth: true };
+    }
     if (R.cro && R.cro.score != null) {
       var ps3 = R.psi && R.psi.scores ? R.psi.scores : null, realSpeed = ps3 && ps3.performance != null;
       var lead4 = R.cro.labels === "LEAD";
@@ -1827,12 +1827,15 @@
     var shot = R.psi && R.psi.shots && R.psi.shots.final;
     var og = /^https:\/\//i.test(P.ogImage || "") ? P.ogImage : "";
     h += '<section class="rp-hero" id="rp-overview">';
-    h += '<div class="rp-score"><div class="rp-score-top">' + ringSvg(C.total) + '<div><span class="an-label">Website score</span><div class="rp-verdict">' + esc(C.verdict) + '</div><p class="an-sub">Across the areas we could measure on this page.' + (C.est ? " Speed and accessibility are estimated." : "") + "</p></div></div>";
+    h += '<div class="rp-score"><div class="rp-score-top">' + ringSvg(C.total) + '<div><span class="an-label">' + (C.growth ? "Growth score" : "Website score") + '</span><div class="rp-verdict">' + esc(C.verdict) + '</div><p class="an-sub">Across the areas we could measure on this page.' + (C.est ? " Speed and accessibility are estimated." : "") + "</p></div></div>";
     h += '<div class="rp-kpis"><div><b>' + F.length + "</b><span>" + (F.length === 1 ? "issue" : "issues") + ' costing sales</span></div><div><b>' + nBar + "</b><span>buyer " + (nBar === 1 ? "barrier" : "barriers") + ' triggered</span></div><div><b>' + T.length + "</b><span>" + (T.length === 1 ? "test" : "tests") + " ready to run</span></div></div>";
     h += '<div class="rp-areas">' + C.areas.map(function (a) {
       return '<div class="rp-area' + (a.ctx ? " ctx" : "") + (a.v == null ? " na" : "") + '" title="' + esc(a.src) + '"><span class="nm">' + esc(a.name) + (a.est && a.v != null ? "<em>est.</em>" : "") + '</span><span class="bar"><i style="width:' + (a.v || 0) + "%;background:" + colorFor(a.v) + '"></i></span><b>' + (a.v == null ? "n/a" : a.v) + '</b><span class="w">' + (a.w ? a.w + "%" : "info") + "</span></div>";
     }).join("") + "</div>";
-    if (C.v3) {
+    if (C.growth) {
+      var Gs = R.growth;
+      h += '<details class="rp-how"><summary>How the score works</summary><p>' + esc("Your Growth score is about this page only. Convert counts 35% (whether the page answers the doubts " + (Gs.cat && Gs.cat !== "Other" ? Gs.cat.toLowerCase() + " " : "") + "shoppers have before paying: 60%, and how the page is laid out on a phone, benchmarked on 570+ sites: 40%). Land (Google PageSpeed on mobile and desktop, plus ad match) counts 20%, Trust 15%, Discover (search and AI) 15%, Order value 7.5% and Retain 7.5%." + (Gs.penalty ? " Each Must-solve question the page leaves unanswered takes off 3 points; " + Gs.mustNo + " " + (Gs.mustNo === 1 ? "question costs" : "questions cost") + " " + Gs.penalty + " here." : "") + " A partly answered question counts 30% of a full answer.") + "</p></details>";
+    } else if (C.v3) {
       var LBL = R.cro.kind === "rubric" || R.cro.kind === "blend" ? RUBRIC_LABEL : CRO_LABEL;
       var up = (R.cro.up || []).map(function (k) { return "<li class=\"up\">" + esc(LBL[k] || k) + "</li>"; }).join("");
       var dn = (R.cro.down || []).map(function (k) { return "<li class=\"dn\">" + esc((R.cro.v === 4 && CRO_LABEL_NEG[k]) || LBL[k] || k) + "</li>"; }).join("");
@@ -2489,7 +2492,7 @@
     var C = out.C, lines = [];
     var hh = hostOf(R.url) || R.host;
     lines.push("---", 'title: "TrooCRO website analysis for ' + hh + '"', "format: agent view of this page (the same facts as the page, as text)", "---", "");
-    lines.push("# Website analysis for " + hh, "", "Website score: " + (C.total != null ? C.total + "/100" : "not enough to score") + (C.est ? " (partly estimated)" : "") + ". " + C.verdict, "");
+    lines.push("# Website analysis for " + hh, "", (C.growth ? "Growth score: " : "Website score: ") + (C.total != null ? C.total + "/100" : "not enough to score") + (C.est ? " (partly estimated)" : "") + ". " + C.verdict, "");
     lines.push("## Area scores");
     C.areas.forEach(function (a) { lines.push("- " + a.name + ": " + (a.v != null ? a.v + "/100" : "not measured") + " (" + (a.w ? a.w + "% of score" : "not scored") + "; " + a.src + ")"); });
     lines.push("", "## Findings, by priority");

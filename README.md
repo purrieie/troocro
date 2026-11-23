@@ -42,20 +42,21 @@ The report is now a growth plan, not a list of generic findings. Same scan, four
 
 | Route | What it does |
 | --- | --- |
-| `GET /crawl?url=` | Reads robots.txt and the sitemap, samples up to 22 pages (home, products, collections, pages, blogs) and skips anything robots.txt disallows. Per page: status, title, description, canonical, noindex, H1s, schema types, rating and FAQ schema, images without alt. |
+| `GET /crawl?url=` | Not used by the report (it analyses only the page that was entered). Samples up to 22 sitemap pages, respecting robots.txt, for a future site-wide view. |
 | `POST /trust {url}` | Fetches the returns and shipping policies, pulls facts (return window, damaged-only returns, free-shipping threshold, COD fee) and compares them with what the page promises. Also: countdown or "people viewing" scripts that use random numbers, sale labels with no higher original price, schema price vs product price, claims like "clinically proven" with no source nearby, and installed apps (reviews, loyalty, subscriptions, upsell, messaging, checkout). Quotes are copied from the pages, never written. |
 | `POST /insight {...}` | The only AI call: one small Groq request per page (cached 24h, 30 a day per visitor, 1,500 a day in total). It writes 4 to 6 buyer questions for this exact product, the exact page quote that answers each one (checked by script, dropped if it isn't on the page), real contradictions between two quotes (both checked), and one line on the biggest reason a shopper might not buy. If it fails, the report runs without it. |
 | `GET /peers?cat=&market=&exclude=` | Two category leaders for India or the US: homepage scan plus Google PageSpeed (mobile and desktop), refreshed once a day by `GET /peer-refresh?host=`. |
 
 The Groq key and the server PageSpeed key are placeholders in this repo (`__GROQ_KEY__`, `__PSI_KEY__`); the deployed function has them. The browser PageSpeed key is in `assets/js/config.js` (restrict it to purrieie.github.io in Google Cloud).
 
-**PageSpeed:** 3 runs on mobile and 3 on desktop in parallel from the browser, averaged.
+**One page only:** the report covers the page that was entered: one Google PageSpeed run on mobile and one on desktop (retried once if Google fails), the page's own search checks, and the policies it links to. No second page and no site crawl.
 
 **Engine** (`assets/js/growth.js`, pure script):
 - Category, sub-category (86 from the TrooCRO library), market and season. The category gets a second opinion from the product's own words when the visitor didn't pick it.
 - **Buyer questions**: the category tab of the Troopod Category Barrier Library (`assets/js/troogrowth-lib.js`, built by `calibration/troogrowth/build_lib.py`), each graded Answered, Partly, Not answered or Check from the page text, the page checks mapped to that barrier, and the trust facts. Must, Should and Basics come from the library's priority for that category. Sub-categories drop questions that don't apply (no "will it fit my room" for a detergent).
-- **Six levers**: Discover (crawl + Google SEO score), Land (PageSpeed, accessibility, ad-to-page match), Convert (buyer questions + the benchmarked layout score), Trust, Order value, Retain. Each has a score, issues with evidence and fixes, and what's already in place.
+- **Six levers**: Discover (this page's search and AI checks + Google SEO score), Land (PageSpeed, accessibility, ad-to-page match), Convert (buyer questions + the benchmarked layout score), Trust, Order value, Retain. Each has a score, issues with evidence and fixes, and what's already in place.
 - **Money**: visitors x conversion x order value, from the visitor's answers, the page and the TrooCRO benchmark. Each 10% lift is worth the same, so levers are ranked by room to grow, the visitor's goal, traffic source and season, with lower weight on Order value and Retain (less of them is visible from outside).
+- **Growth score** (the headline, this page only): Convert 35% (buyer questions 60% + page layout benchmark 40%), Land 20%, Trust 15%, Discover 15%, Order value 7.5%, Retain 7.5%, minus 3 for each Must-solve question left unanswered (up to 15). A partly answered question counts 30%.
 - **Report**: snapshot, the biggest problem in one line, three things to do this week, buyer questions, levers, you vs two category leaders, things to confirm with the team, and the Troopod services that fit the top levers. Every line is tagged Seen, Estimate or Confirm.
 
 ## Backend (Supabase, free plan)

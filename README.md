@@ -110,6 +110,15 @@ The list lives in `assets/js/troogrowth-lib.js` (`q13`). The question source is 
   - A revenue calculator. Its stated assumption: conversion rises by half the CRO gain, capped at +15%.
 - **Phone.** The page on a phone sits on the right, with pins that match the fix numbers and a Now / With fixes toggle.
 
+**Page reading (v14.2).** Each scan reads the page in up to five ways, falling back one step at a time:
+1. The page's own HTML.
+2. What sits behind a tap in that HTML: tabs, pop-ups, accordions, and the product data in the store's code (price breakup, rating, return and warranty lines).
+3. A sealed copy that runs the store's scripts.
+4. A real-browser render (`troocro-page-view?render=1`). This uses Cloudflare Browser Rendering when `CF_ACCOUNT_ID`/`CF_API_TOKEN` are set, otherwise the free r.jina.ai reader. A bot-check page counts as a failed render.
+5. Only if the render fails: the grader reads Google PageSpeed's full-page screenshot, one small vision call.
+
+Anything none of these can read is marked "couldn't read" and left out of the score, not scored as missing.
+
 ## Backend (Supabase, free plan)
 
 Project: **TrooCRO** (`mrfixorpmhrnkxhqzesn`). Function URL is set in `assets/js/config.js`.

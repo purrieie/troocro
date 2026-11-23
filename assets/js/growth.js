@@ -19,6 +19,7 @@
     if (!html || !win.DOMParser) return { all: "", main: "", h1: "" };
     var d;
     try { d = new DOMParser().parseFromString(html, "text/html"); } catch (e) { return { all: "", main: "", h1: "" }; }
+    var hid = hiddenFacts(d);
     Array.prototype.forEach.call(d.querySelectorAll("script,style,noscript,svg,template,iframe,.visually-hidden,.sr-only,.screen-reader-text,.hidden,[hidden],[aria-hidden=true],[style*='display:none'],[style*='display: none']"), function (n) { n.remove(); });
     Array.prototype.forEach.call(d.querySelectorAll("p,li,h1,h2,h3,h4,h5,h6,section,tr,dt,dd,summary,label,option"), function (n) { n.insertAdjacentText("afterend", ". "); });
     Array.prototype.forEach.call(d.querySelectorAll("br,div,td,button,a,span"), function (n) { n.insertAdjacentText("afterend", " "); });
@@ -33,9 +34,66 @@
     // repeated marquee text: keep the first copy of each sentence
     var seen = {}, out = [];
     main.replace(/([.!?])\s+/g, "$1\u0001").split("\u0001").forEach(function (s) { var k = s.toLowerCase().slice(0, 80); if (!seen[k]) { seen[k] = 1; out.push(s); } });
-    return { all: all.slice(0, 120000), main: out.join(" ").slice(0, 80000), h1: h1t };
+    return { all: all.slice(0, 120000), main: out.join(" ").slice(0, 80000), h1: h1t, hid: hid };
+  }
+  /* v14.1: what the page holds but doesn't show until a tap: tabs, pop-ups, accordions (hidden in the HTML) and the
+     product data the store's scripts carry (price breakup, rating, return and warranty lines). Only lines a buyer
+     question could use are kept, so the AI grader can credit a size guide in a pop-up or a price breakup in a tab. */
+  var HID_RX = /(gold value|metal value|stone value|diamond value|deliver|dispatch|shipping|pincode|cash on delivery|return|exchange|refund|replace|warrant|guarantee|size guide|size chart|ring size|measure|dimension|making charge|metal rate|price break|gst|net weight|gross weight|purity|hallmark|certif|ingredient|material|fabric|wash|care|expiry|shelf life|in the box|rating|reviews?)/i;
+  function hiddenOf(html) { try { return hiddenFacts(new DOMParser().parseFromString(html, "text/html")); } catch (e) { return ""; } }
+  function hiddenFacts(d) {
+    var A = [], B = [], C = [], seen = {};
+    var NOISE = /(\bid\b|_id\b|per page|length|nudge|popup|logged|session|featured|measure in|threshold|priority|enable|visible|max |min |count for|tag ?name|escode|color|shadow)/i;
+    var STRONG = /(making|metal rate|gold rate|silver rate|gst|tax|net weight|gross weight|metal weight|stone weight|purity|karat|rating|review count|ratings? count|warranty|return days|delivery days)/i;
+    function clean(s) { return String(s || "").replace(/\\u00([0-9a-f]{2})/gi, function (m, h) { return String.fromCharCode(parseInt(h, 16)); }).replace(/\\[nrt]/g, " ").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim(); }
+    function add(L, s) {
+      s = clean(s);
+      if (s.length < 6 || s.length > 260 || !HID_RX.test(s) || /^(https?:|\/|[\w-]+\.(?:js|css|png|jpe?g|svg|webp)\b)|[{}<>]|function\s*\(|\bvar\b|=>|\b[A-Z]_[A-Za-z]+_/.test(s)) return;
+      var k = s.toLowerCase().slice(0, 70); if (seen[k]) return; seen[k] = 1; L.push(s);
+    }
+    try {
+      Array.prototype.forEach.call(d.querySelectorAll("script"), function (sc) {
+        var t = sc.textContent || "", ty = (sc.getAttribute("type") || "").toLowerCase();
+        if (t.length < 40 || t.length > 3000000) return;
+        if (!/json/.test(ty) && !/__NEXT_DATA__|__NUXT__|__INITIAL_STATE__|__PRELOADED_STATE__|__APOLLO_STATE__|window\.__\w+\s*=|productDetail|priceBreak/i.test(t + (sc.id || ""))) return;
+        var m, n = 0;
+        /* label + value pairs, e.g. a price breakup row {"title":"Making Charge", ... "value":"Rs. 2363"} */
+        var pr = /"(?:title|label|name|key)"\s*:\s*"([^"]{2,60})"[^{}]{0,240}?"(?:final_value|value|amount|price|text)"\s*:\s*"?([^",}\]]{1,48})/g;
+        while ((m = pr.exec(t)) && n++ < 4000) { var lab = clean(m[1]), val = clean(m[2]); if (HID_RX.test(lab) && !NOISE.test(lab) && /\w/.test(val) && val !== "-") add(A, lab + ": " + val); }
+        var re = /"([A-Za-z_][\w ]{1,40})"\s*:\s*("((?:[^"\\]|\\.){2,260})"|-?\d+(?:\.\d+)?)/g; n = 0;
+        while ((m = re.exec(t)) && n++ < 40000) {
+          var key = m[1].replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " "), val2 = m[3] != null ? m[3] : m[2];
+          if (NOISE.test(key)) continue;
+          if (STRONG.test(key) && !/[a-z]{4}/i.test(val2)) add(A, key + ": " + clean(val2));
+          else if (m[3] != null && /[a-z]{3}/i.test(val2) && / \S+ /.test(val2)) add(C, val2);
+        }
+      });
+      Array.prototype.forEach.call(d.querySelectorAll("[hidden],[aria-hidden=true],.hidden,[style*='display:none'],[style*='display: none'],[class*=modal],[class*=popup],[class*=tab-pane],[class*=tabpanel],[role=tabpanel],[class*=accordion],[class*=drawer],details"), function (el) {
+        if (el.closest && el.closest("script,style,svg")) return;
+        String(el.textContent || "").replace(/\s+/g, " ").split(/(?<=[.!?])\s+|\s{2,}/).forEach(function (x) { add(B, x); });
+      });
+    } catch (e) { /* best effort */ }
+    return A.slice(0, 40).concat(B, C).join(". ").slice(0, 5000);
   }
 
+
+  /* v14.1: add what the real-browser render saw: lines our reads missed, and the facts behind its tabs and pop-ups */
+  function mergeRender(t, d) {
+    t = t || { all: "", main: "", h1: "" };
+    if (!d || !d.html) { t.render = { ok: false }; return t; }
+    var r = pageText(d.html), sm = String(t.main || ""), low = sm.toLowerCase(), seen = {};
+    var extra = String(r.main || "").replace(/([.!?])\s+/g, "$1\u0001").split("\u0001").filter(function (x) {
+      x = x.trim(); if (x.length < 4) return false; var k = x.toLowerCase().slice(0, 50).replace(/\.$/, ""); if (seen[k] || low.indexOf(k) >= 0) return false; seen[k] = 1; return true;
+    }).join(" ");
+    if (sm.length < 600 && r.main) { t.main = (r.main + (sm ? " " + sm : "")).slice(0, 95000); t.all = ((r.all || r.main) + " " + String(t.all || "")).slice(0, 150000); }
+    else if (extra) { t.main = (sm + " " + extra).slice(0, 95000); t.all = (String(t.all || "") + " " + extra).slice(0, 150000); }
+    if (!t.h1 && r.h1) t.h1 = r.h1;
+    if (r.hid) t.hid = ((t.hid ? t.hid + ". " : "") + r.hid).slice(0, 7000);
+    if (t.live && t.live.ok && extra) t.live.extra = (String(t.live.extra || "") + " " + extra).slice(0, 8000), t.live.mode = t.live.mode === "same" ? "added" : t.live.mode;
+    else if (extra) t.live = Object.assign({}, t.live || {}, { ok: true, mode: "added", extra: extra.slice(0, 8000) });
+    t.render = { ok: true, by: d.by || "", added: extra.length };
+    return t;
+  }
   /* Add what the live read saw (the page run with its own scripts) to the script-free text.
      A page that was an empty shell without scripts is read from the live copy instead. */
   function mergeLive(t, L) {
@@ -564,7 +622,8 @@
     else set("price", "pass", "One price and one discount.");
     /* 2. page and policies agree */
     var priceFailed = out.price && out.price.st === "fail";
-    var hard = TR.items.filter(function (i) { return (i.k === "contra" || i.k === "contra_ai") && i.st !== "confirm" && !(priceFailed && /discount|% ?off|price/i.test(i.t + " " + i.ev)); }), soft = TR.items.filter(function (i) { return i.k === "contra_exc"; });
+    /* v14.1: only conflicts our scripts proved fail this rule; ones the AI reader spotted (often a menu or tag line) count as partly */
+    var hard = TR.items.filter(function (i) { return i.k === "contra" && i.st !== "confirm" && !(priceFailed && /discount|% ?off|price/i.test(i.t + " " + i.ev)); }), soft = TR.items.filter(function (i) { return i.k === "contra_exc" || (i.k === "contra_ai" && i.st !== "confirm"); });
     if (hard.length) set("agree", "fail", hard[0].t.replace(/[.\s]+$/, "") + (hard.length > 1 ? " (+" + (hard.length - 1) + " more)" : "") + ". " + hard[0].ev);
     else if (soft.length) set("agree", "partly", soft[0].t.replace(/[.\s]+$/, "") + ". " + soft[0].ev);
     else set("agree", tr.facts || sh ? "pass" : "na", tr.facts || sh ? "No conflicts between the page and its policies." : "We couldn't read the policies.");
@@ -580,6 +639,10 @@
     var rt = P.rating && P.rating.value ? P.rating : tr.reviews && tr.reviews.schema && tr.reviews.schema.value ? tr.reviews.schema : null;
     var lvr = ctx.text.live && ctx.text.live.ok && ctx.text.live.rv;
     if (!rt && lvr && lvr.count >= 1 && lvr.rating) rt = { value: lvr.rating, count: lvr.count };
+    /* v14.1: a rating the store carries in its code, or one the grader read on screen, counts even if our text read missed it */
+    if (!rt && ctx.text.hid) { var hr = ctx.text.hid.match(/\brating: ([1-5](?:\.\d{1,2})?)\b/i), hc = ctx.text.hid.match(/\b(?:ratings? count|review count|total reviews?|reviews count): ([\d.,]+k?)\b/i); if (hr) rt = { value: +hr[1], count: hc && !/k$/i.test(hc[1]) ? +hc[1].replace(/,/g, "") : 0 }; }
+    var qr = qs.filter(function (q) { return q.v13 && q.t === "reviews" && (q.g === "yes" || q.g === "partly"); })[0];
+    if (!rt && qr && qr.ev[0]) { var qm = qr.ev[0].match(/([1-5]\.\d)\s*(?:\/\s*5|★|stars?)?[^\d]{0,24}?([\d,]+)\s*(?:verified )?(?:reviews|ratings)/i); if (qm) rt = { value: +qm[1], count: +qm[2].replace(/,/g, "") }; }
     if (!rt) { var mr = top.match(/\b([1-5](?:\.\d{1,2})?)\s*(?:\/\s*5|out of 5|★|stars?)?\s*[|(·]?\s*(?:from |based on )?([\d,]{1,7})\s*(?:\+\s*)?(?:verified )?(?:reviews|ratings)\b/i); if (mr && +mr[1] >= 1 && +mr[1] <= 5) rt = { value: +mr[1], count: +mr[2].replace(/,/g, "") }; }
     var rv = sh && sh.reviews, cnt = rt ? +(rt.count || 0) : 0;
     var apps = appsOf(R, ctx).reviews, known = sh && sh.brand_known === "household";
@@ -629,7 +692,7 @@
      unreliable, or a widget with no reviews below 3 stars at all, pull it down. "Couldn't load" leaves it out. */
   var REV_W = 0.3;
   function reviews4(R, ctx, sh) {
-    var P = R.page || {}, tr = ctx.trust || {}, main = String(ctx.text.main || ""), t = main + " " + String((tr.product && tr.product.desc) || ""), it = [], pts = 0;
+    var P = R.page || {}, tr = ctx.trust || {}, main = String(ctx.text.main || ""), t = main + " " + String((tr.product && tr.product.desc) || "") + " " + String((ctx.grade && ctx.grade.seenText) || ""), it = [], pts = 0;
     var lv = ctx.text.live || null, lvr = lv && lv.ok ? lv.rv : null;
     var rt = P.rating && P.rating.value ? P.rating : tr.reviews && tr.reviews.schema && tr.reviews.schema.value ? tr.reviews.schema : null, cnt = rt ? +(rt.count || 0) : 0, rating = rt ? +rt.value || 0 : 0;
     if (!cnt && lvr && lvr.count >= 1) { cnt = lvr.count; rating = rating || lvr.rating || 0; }
@@ -637,11 +700,14 @@
     if (!cnt) { var h1 = (ctx.text.h1 || "").slice(0, 30), i0 = h1 ? main.indexOf(h1) : -1, mp = (i0 >= 0 ? main.slice(i0, i0 + 600) : main.slice(0, 1500)).match(/\((\d{2,6})\)/); if (mp) cnt = +mp[1]; }
     if (!cnt && sh && sh.reviews && sh.reviews.read >= 5) cnt = sh.reviews.read;
     if (!rating && lvr && lvr.rating) rating = lvr.rating;
+    if (!rating) { var rr = t.match(/\b([1-5]\.\d)\s*(?:\/\s*5|★|stars?)?\s*[|(·]?\s*[\d,]{1,7}\s*(?:verified )?(?:reviews|ratings)\b/i) || String(ctx.text.hid || "").match(/\brating: ([1-5]\.\d)\b/i); if (rr) rating = +rr[1]; }
     var known = sh && sh.brand_known, tier = sh && sh.price_tier, carry = known === "household" || (known === "well-known" && (tier === "premium" || tier === "luxury"));
     var rApps = appsOf(R, ctx).reviews.concat((lv && lv.apps) || []).filter(function (x, i, A) { return A.indexOf(x) === i; });
     var noLoad = !cnt && rApps.length && !(lvr && lvr.zero) && !(sh && sh.reviews && sh.reviews.read >= 3);
     if (noLoad) return { score: null, noLoad: rApps, items: [{ k: "volume", unk: true, label: "Reviews: couldn't load" }] };
     if (!cnt && carry) return { score: null, carry: true, items: [] };
+    /* a rating is shown but the count didn't reach our reader: leave reviews out of the score instead of calling them missing */
+    if (!cnt && rating >= 1) return { score: null, noLoad: ["the review count"], rating: rating, items: [{ k: "rating", ok: rating >= 4, label: rating.toFixed(1) + "★ average" }, { k: "volume", unk: true, label: "Review count: couldn't read" }] };
     function add(k, ok, n, label) { it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
     add("volume", cnt >= 5, cnt >= 500 ? 60 : cnt >= 100 ? 50 : cnt >= 30 ? 35 : 15, cnt ? cnt.toLocaleString("en-IN") + " reviews" : "No reviews");
     if (cnt) {
@@ -663,7 +729,7 @@
   var PROOF_RX = /clinical(?:ly)?|\b(?:scientific|independent|published|research)\s+stud(?:y|ies)\b|\bstud(?:y|ies)\s+(?:show|shows|showed|found|proves?|confirm(?:s|ed)?)\b|volunteers|participants|dermatologist[- ](?:tested|approved)|lab[- ]tested|third[- ]party|certified|certificate|hallmark|\bbis\b|\bigi\b|\bgia\b|\bisi\b|fssai|\biso\b|\bgmp\b|ayush|patent|award|as seen (?:in|on)|featured in|bee \d|\d[- ]star (?:rated|energy)|organic certified|india organic|usda|great taste|peta|vegan society|oeko|gots/gi;
   var INFO_RX = /how to (?:use|brew|wear|apply|install)|directions|ingredients?|specifications?|dimensions|material|fabric|cotton|polyester|linen|\bgsm\b|\bfit\b|model (?:is )?wear|size chart|wash|in the box|what.s inside|care (?:guide|instructions)|battery|playback|playtime|bluetooth|warranty|ipx\d|water[- ]resistant|compatib|\brpm\b|\bwatts?\b|bldc|motor|remote|purity|carat|karat|\d{2}kt|silver|brass|plating|gold weight|net (?:weight|quantity|wt)|shelf life|nutrition|calories|protein|servings?|cups? per|origin|sourced|preservative|arabica|thickness|layers?|foam|firmness|trial|weight/gi;
   function proof4(R, ctx, sh, rules, RV) {
-    var P = R.page || {}, tr = ctx.trust || {}, main = String(ctx.text.main || ""), t = main + " " + String((tr.product && tr.product.desc) || ""), it = [], pts = 0;
+    var P = R.page || {}, tr = ctx.trust || {}, main = String(ctx.text.main || ""), t = main + " " + String((tr.product && tr.product.desc) || "") + " " + String(ctx.text.hid || "") + " " + String((ctx.grade && ctx.grade.seenText) || ""), it = [], pts = 0;
     function add(k, ok, n, label) { it.push({ k: k, ok: !!ok, label: label }); if (ok) pts += n; }
     /* someone else vouches: tests, certificates, awards, other platforms */
     var kinds = {}; (t.match(PROOF_RX) || []).forEach(function (m) { kinds[m.toLowerCase().slice(0, 6)] = 1; });
@@ -685,7 +751,8 @@
     var price = (sh && sh.stock && sh.stock.price) || (tr.product && tr.product.price) || P.aov || 0;
     var minBuy = 0; (t.match(/(?:min(?:imum)?\.? (?:purchase|order)|orders? (?:above|over|worth)|purchase of)\s*(?:of\s*)?(?:rs\.?|₹|inr)?\s?([\d,]{3,6})/gi) || []).forEach(function (m) { var v = +(m.match(/([\d,]{3,6})\s*$/) || [0, "0"])[1].replace(/,/g, ""); if (v > minBuy) minBuy = v; });
     var codes = (t.match(/use code|coupon code|\bcode\s*:?\s*[A-Z0-9]{4,}\b|click to copy|tap to copy/g) || []).length;
-    if (codes >= 2 || (price && minBuy >= 3 * price)) { raw -= 20; it.push({ k: "clutter", ok: false, bad: true, label: price && minBuy >= 3 * price ? "Offers for baskets far above this price" : "Coupon codes crowd the price" }); }
+    /* v14: coupon clutter is shown here but scored once, in the "One clear price" house rule, so proof isn't wiped out twice */
+    if (codes >= 2 || (price && minBuy >= 3 * price)) it.push({ k: "clutter", ok: false, bad: true, label: price && minBuy >= 3 * price ? "Offers for baskets far above this price" : "Coupon codes crowd the price" });
     raw = clamp(Math.round(raw), 0, 100);
     var known = sh && sh.brand_known, tier = sh && sh.price_tier;
     var carry = known === "household" ? 80 : known === "well-known" && (tier === "premium" || tier === "luxury") ? 75 : 0;
@@ -1274,5 +1341,5 @@
     return md;
   }
 
-  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, qList: qList, NAMES: BR_NAME, project: project };
+  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, qList: qList, mergeRender: mergeRender, hiddenOf: hiddenOf, NAMES: BR_NAME, project: project };
 })();

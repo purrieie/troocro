@@ -527,6 +527,17 @@
       .then(function (r) { clearTimeout(t); return r.ok ? r.json() : null; })
       .catch(function () { return null; });
   }
+  /* the page as a real browser drew it (troocro-page-view ?render=1: Cloudflare Browser Rendering, else r.jina.ai).
+     A bot-check page ("Just a moment…") counts as a failed render, never as the store's content. */
+  function fetchRender(url) {
+    var base = String(CFG.pageView || "").replace(/\/+$/, "");
+    if (!base || !win.fetch || CFG.render === false) return Promise.resolve(null);
+    var ctl = win.AbortController ? new AbortController() : null, t = ctl ? setTimeout(function () { ctl.abort(); }, 50000) : 0;
+    return fetch(base + "?render=1&url=" + encodeURIComponent(url), { signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(t); return r.ok ? r.json() : null; })
+      .then(function (d) { return d && d.html && !/<title>\s*(just a moment|attention required|access denied|verify you are human|are you a robot)/i.test(d.html.slice(0, 3000)) ? d : null; })
+      .catch(function () { return null; });
+  }
   /* ---------- the live read: the same page WITH its scripts, run in a hidden frame that has no access to this page
      (sandbox without allow-same-origin), so reviews and text the store draws with JavaScript can be read ---------- */
   function livePrelude() {
@@ -699,6 +710,7 @@
       .then(function (r) { clearTimeout(ta); return r.ok ? r.json() : null; })
       .then(function (v) {
         if (!v || !v.html || v.html.length < 300) return { ok: false, why: "fetch" };
+        S.rawHtml = v.html; // the page's own HTML with its scripts: its product data (price breakup, rating) feeds the hidden-facts read
         return new Promise(function (res) {
           var id = "tl" + Math.random().toString(36).slice(2), fr = doc.createElement("iframe"), done = false, tA = 0, tB = 0;
           var latest = null, tL = 0;
@@ -1037,7 +1049,15 @@
     gx.crawlP = Promise.resolve(null); // search checks come from the entered page itself
     gx.trustP = gapi("/trust", { url: S.url }, 50000);
     var staticP = S.viewP.then(function (v) { return v && v.html && win.TrooGrowth ? win.TrooGrowth.pageText(v.html) : null; }).catch(function () { return null; });
-    gx.textP = Promise.all([staticP, Promise.resolve(S.liveP).catch(function () { return null; })]).then(function (x) { return win.TrooGrowth && win.TrooGrowth.mergeLive ? win.TrooGrowth.mergeLive(x[0], x[1]) : x[0]; });
+    gx.renderP = fetchRender(S.url).then(function (d) {
+      if (d) addFeed("act", "Opened your page in a real browser", "Read what the store draws with JavaScript, the way a shopper sees it", "", "reader");
+      return d;
+    });
+    gx.textP = Promise.all([staticP, Promise.resolve(S.liveP).catch(function () { return null; }), gx.renderP]).then(function (x) {
+      var t = win.TrooGrowth && win.TrooGrowth.mergeLive ? win.TrooGrowth.mergeLive(x[0], x[1]) : x[0];
+      if (t && S.rawHtml && win.TrooGrowth.hiddenOf) { var rh = win.TrooGrowth.hiddenOf(S.rawHtml); if (rh) t.hid = (rh + (t.hid ? ". " + t.hid : "")).slice(0, 7000); }
+      return win.TrooGrowth && win.TrooGrowth.mergeRender ? win.TrooGrowth.mergeRender(t, x[2]) : t;
+    });
     return gx;
   }
   function growthAfterScan(r) {
@@ -1067,21 +1087,53 @@
     var gx = S.gx, p = r.page || {};
     /* the AI reader's category (from the shoppers call) beats our keyword guess; wait up to 45s for it */
     var aiCatP = Promise.race([Promise.resolve(gx.shopP).then(function (d) { return d && d.category; }).catch(function () { return null; }), sleep(45000).then(function () { return null; })]);
-    gx.gradeP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP, aiCatP]).then(function (x) {
-      var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[3] || x[2] || "Other";
+    /* Google's real-Chrome render of the whole page (PageSpeed full-page screenshot), cut into phone-sized slices for the grader to read */
+    /* last resort, kept small on Groq: only when the real-browser render failed (bot check, timeout) does the grader read
+       Google PageSpeed's full-page screenshot, which comes from Google's own Chrome */
+    var fullP = CFG.gradeShots !== false ? Promise.all([gx.renderP]).then(function (rr) { return rr[0] ? [] : Promise.race([Promise.resolve(S.psiP).then(function (ps) { return ps && ps.shots && ps.shots.full ? sliceShot(ps.shots.full) : []; }).catch(function () { return []; }), sleep(110000).then(function () { return []; })]); }) : Promise.resolve([]);
+    gx.gradeP = Promise.all([gx.textP, Promise.race([gx.trustP, sleep(22000).then(function () { return null; })]), catP, aiCatP, fullP]).then(function (x) {
+      var t = x[0], tr = x[1] || {}, prod = tr.product || {}, cat = x[3] || x[2] || "Other", shots = x[4] || [];
       if (!t || !t.main || t.main.length < 300 || !win.TrooGrowth.qList) return null;
       var L = win.TrooGrowth.qList(cat, [p.title, t.h1, prod.title, prod.type].join(" "), t.main.slice(0, 4000));
       if (!L) return null;
-      var text = (prod.desc && t.main.indexOf(prod.desc.slice(0, 40)) < 0 ? prod.desc.slice(0, 1500) + " " : "") + t.main;
-      var ex = t.live && t.live.extra; if (ex && t.live.mode === "added") text = text.slice(0, 10000) + " " + ex.slice(0, 2000);
+      /* the grader reads 12K characters: start at the product title, keep what the store drew with JavaScript, then add
+         the policy-type sentences (delivery, returns, warranty, size, care) from the rest of the page, so long pages keep them */
+      var main = t.main, h0 = t.h1 ? main.indexOf(t.h1.slice(0, 40)) : -1;
+      var head = (prod.desc && main.indexOf(prod.desc.slice(0, 40)) < 0 ? prod.desc.slice(0, 1500) + " " : "") + main.slice(Math.max(0, h0 - 300), Math.max(0, h0 - 300) + 7500);
+      var ex = t.live && t.live.extra && t.live.mode === "added" ? t.live.extra.slice(0, 2500) : "";
+      var POL = /(deliver|dispatch|ship|pincode|cash on delivery|\bcod\b|return|exchange|refund|replace|warrant|guarantee|size|fit|measure|dimension|care|wash|ingredient|material|certif|hallmark|tested|expiry|shelf life|in the box|includes)/i;
+      var rest = (h0 > 300 ? main.slice(0, h0 - 300) + " " : "") + main.slice(Math.max(0, h0 - 300) + 7500), pol = [], seen = {};
+      rest.split(/(?<=[.!?])\s+/).forEach(function (x) { var k = x.slice(0, 60).toLowerCase(); if (x.length > 12 && x.length < 400 && POL.test(x) && !/[\u201c\u201d"]|\b(?:I|I'm|my|me)\b/.test(x) && !seen[k]) { seen[k] = 1; pol.push(x); } });
+      var hid = t.hid ? " On the page behind a tap (tabs, pop-ups, product data): " + t.hid.slice(0, 3200) + "." : "";
+      var text = head.slice(0, 6500) + (ex ? " " + ex.slice(0, 2000) : "") + hid + (pol.length ? " " + pol.join(" ") : "");
       var f = (r.cro && r.cro.f) || {}, facts = [];
       if (f.gallery != null) facts.push(f.gallery + " product photos in the gallery");
       if (f.video != null) facts.push(f.video ? "has a product video" : "no product video");
       shopFacts(r, tr).slice(0, 6).forEach(function (x) { facts.push(x); });
       var slim = function (q) { var o = { id: q.id, q: q.q, good: q.good }; if (q.c) o.c = q.c; return o; };
       return gapi("/grade", { url: r.url, v: "13a", cat: cat, list: L.key, product: prod.title || t.h1 || "", price: prod.price ? "Rs " + prod.price : "", facts: facts.join("; "), text: text.slice(0, 12000), policy: tr.policyText || "",
-        qs: L.qs.map(slim), adds: L.adds.map(function (a) { return { n: a.n, qs: a.qs.map(slim) }; }), rules: L.rules, t: CFG.shopTest || undefined }, 70000, CFG.grade || String(CFG.growth || "").replace(/\/+$/, "") + "-grade")
+        qs: L.qs.map(slim), adds: L.adds.map(function (a) { return { n: a.n, qs: a.qs.map(slim) }; }), rules: L.rules, shots: shots, t: CFG.shopTest || undefined }, 90000, CFG.grade || String(CFG.growth || "").replace(/\/+$/, "") + "-grade")
         .then(function (d) { if (d && d.grades) { d.list = L.key; d.cat = cat; } return d && d.grades ? d : null; });
+    });
+  }
+  function sliceShot(full) {
+    return new Promise(function (res) {
+      if (!full || !full.data || !doc.createElement("canvas").getContext) return res([]);
+      var im = new Image();
+      im.onload = function () {
+        try {
+          var W = im.naturalWidth, H = Math.min(im.naturalHeight, W * 20), sc = Math.min(2, 640 / W), ch = Math.round(W * 2.4), out = [];
+          for (var y = 0; y < H && out.length < 8; y += ch) {
+            var h = Math.min(ch, H - y); if (h < 60) break;
+            var c = doc.createElement("canvas"); c.width = Math.round(W * sc); c.height = Math.round(h * sc);
+            var g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(im, 0, y, W, h, 0, 0, c.width, c.height);
+            var u = c.toDataURL("image/jpeg", 0.72); if (u.length < 650000) out.push(u);
+          }
+          res(out);
+        } catch (e) { res([]); }
+      };
+      im.onerror = function () { res([]); };
+      im.src = full.data;
     });
   }
   async function growthCtx(capMs) {

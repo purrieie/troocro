@@ -2,6 +2,8 @@
 // so the analyzer can show the real page under the agents. Read-only, nothing stored.
 // ?raw=1 keeps the scripts (only <base> is set and CSP/refresh metas dropped): the analyzer runs that copy in a
 // sandboxed frame with no same-origin access, to read reviews and text that the store draws with JavaScript.
+// ?render=1 returns the page as a real browser drew it (scripts run, page scrolled): Cloudflare Browser Rendering when its
+// token is set (CF_ACCOUNT_ID, CF_API_TOKEN), else the free r.jina.ai reader. Neither gets past a site that blocks bots.
 const ALLOWED_ORIGINS = [/^https:\/\/purrieie\.github\.io$/, /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 TrooCRO-Analyzer/1.0";
 const MAX = 3_000_000;
@@ -30,6 +32,29 @@ Deno.serve(async (req: Request) => {
   const sp = new URL(req.url).searchParams, raw = sp.get("raw") === "1";
   let cur = publicUrl(sp.get("url") || "");
   if (!cur) return json({ error: "bad_url" }, 400);
+  if (sp.get("render") === "1") {
+    const errs: string[] = [];
+    const acc = Deno.env.get("CF_ACCOUNT_ID") || "", tok = Deno.env.get("CF_API_TOKEN") || "";
+    if (acc && tok) {
+      try {
+        const r = await fetch("https://api.cloudflare.com/client/v4/accounts/" + acc + "/browser-rendering/content", {
+          method: "POST", signal: AbortSignal.timeout(40000), headers: { "Authorization": "Bearer " + tok, "Content-Type": "application/json" },
+          body: JSON.stringify({ url: cur.href, userAgent: UA.replace(" TrooCRO-Analyzer/1.0", ""), viewport: { width: 390, height: 844 }, gotoOptions: { waitUntil: "networkidle2", timeout: 30000 }, rejectResourceTypes: ["image", "media", "font"],
+            addScriptTag: [{ content: "(async()=>{for(let y=0;y<document.body.scrollHeight;y+=700){window.scrollTo(0,y);await new Promise(r=>setTimeout(r,120))}window.scrollTo(0,0)})()" }], waitForTimeout: 2500 }),
+        });
+        const d = await r.json().catch(() => null);
+        if (r.ok && d && d.success && typeof d.result === "string" && d.result.length > 500) return json({ url: cur.href, html: d.result.slice(0, MAX), by: "cloudflare" }, 200, { "Cache-Control": "public, max-age=600" });
+        errs.push("cloudflare " + r.status + " " + JSON.stringify(d && d.errors || "").slice(0, 160));
+      } catch (e) { errs.push("cloudflare " + String(e).slice(0, 120)); }
+    }
+    try {
+      const r = await fetch("https://r.jina.ai/" + cur.href, { signal: AbortSignal.timeout(40000), headers: { "X-Return-Format": "html", "X-Timeout": "25", "X-No-Cache": "true", "Accept": "text/html" } });
+      const h = await r.text();
+      if (r.ok && h.length > 500 && !/^\s*\{\s*"code"\s*:\s*4\d\d/.test(h)) return json({ url: cur.href, html: h.slice(0, MAX), by: "jina" }, 200, { "Cache-Control": "public, max-age=600" });
+      errs.push("jina " + r.status);
+    } catch (e) { errs.push("jina " + String(e).slice(0, 120)); }
+    return json({ error: "render_failed", errs }, 502);
+  }
   let res: Response | null = null;
   try {
     for (let i = 0; i < 5; i++) {

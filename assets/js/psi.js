@@ -47,7 +47,8 @@ function compactPsi(d, strategy) {
       }
     : null;
 
-  const fps = a["full-page-screenshot"] && a["full-page-screenshot"].details;
+  // Lighthouse moved the full-page screenshot from audits to lighthouseResult.fullPageScreenshot; read either
+  const fps = (lr && lr.fullPageScreenshot) || (a["full-page-screenshot"] && a["full-page-screenshot"].details);
   const allNodes = (fps && fps.nodes) || {};
   const usedIds = new Set();
   const nodeOf = (it) => {

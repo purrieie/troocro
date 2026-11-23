@@ -641,6 +641,47 @@
   var RULE_ORDER = ["price", "agree", "first", "reviews", "delivery", "returns", "stock", "pressure"];
   var OFFX = /(code|coupon|extra|above|over ₹|orders?\b|prepaid|upi|bank|cart value|purchase of|or more|buy \d|up ?to|upto|\bmin\b|minimum|first order|\bapp\b|sitewide|member|stone|making|on \d|items)/i;
   var FISHY = /(no critical|no negative|no bad|only (?:5|five)|different product|other products?|not about|free product|sent me|exchange for|in exchange|gifted|same review|duplicate|repeated|another language|other language|french|german|store visitor|not verified|unverified)/i;
+
+  /* v14.10: does the page contradict itself? Same fact, two different values on one page. */
+  function selfConflicts(t) {
+    var out = [], T = String(t || "");
+    function vals(rx, norm) { var v = {}, m; rx.lastIndex = 0; while ((m = rx.exec(T))) { var k = norm(m[1]); if (k) v[k] = m[0].trim().slice(0, 60); } return v; }
+    var co = vals(/country of origin\s*[:\-]?\s*([a-z]{2,15})/gi, function (x) { var mm = x.toLowerCase().match(/^(india|china|vietnam|korea|japan|usa|taiwan|thailand|germany|france|italy|uk|bangladesh|indonesia|malaysia|turkey|sri ?lanka)/); return mm ? mm[1] : ""; });
+    if (Object.keys(co).length >= 2) out.push({ t: "Country of origin differs on the page", ev: Object.keys(co).map(function (k) { return "“" + co[k] + "”"; }).join(" vs ") });
+    var at = vals(/(?:number of (?:attachments|heads|combs)\s*[:\-]?\s*(\d{1,2})\b|\b(\d{1,2})\s+(?:magnetic |interchangeable |detachable )?(?:attachments|heads)\b)/gi, function (x) { return x; });
+    /* the regex has two groups: rebuild from both */
+    at = {}; var m2, rxA = /number of (?:attachments|heads)\s*[:\-]?\s*(\d{1,2})\b|\b(\d{1,2})\s+(?:magnetic |interchangeable |detachable )?(?:attachments|heads)\b/gi;
+    while ((m2 = rxA.exec(T))) { var n = m2[1] || m2[2]; if (n && +n > 1) at[n] = m2[0].trim(); }
+    if (Object.keys(at).length >= 2) out.push({ t: "The number of attachments differs on the page", ev: Object.keys(at).map(function (k) { return "“" + at[k] + "”"; }).join(" vs ") });
+    var rt = {}, m3, rxR = /(?:run ?time|runtime|battery life|usage time)[^.\d]{0,30}?(\d{2,3})\s*(?:min|minutes)\b/gi;
+    while ((m3 = rxR.exec(T))) rt[m3[1]] = m3[0].trim().slice(0, 60);
+    if (Object.keys(rt).length >= 2) out.push({ t: "Battery run time differs on the page", ev: Object.keys(rt).map(function (k) { return "“" + rt[k] + "”"; }).join(" vs ") });
+    return out;
+  }
+  /* coupons whose minimum basket is above this product's price: they can't apply to this purchase */
+  function couponsOutOfReach(t, price) {
+    if (!price) return [];
+    var out = [], seen = {}, m, rx = /(?:on (?:a )?min(?:imum)?\.? (?:purchase|order|cart value)(?: value)?|orders? (?:above|over|worth)|purchase of|cart value of)\s*(?:of\s*)?(?:rs\.?|₹|inr)?\s?([\d,]{3,6})/gi;
+    var T = String(t || "");
+    /* only real coupons (a code to copy or apply), not tiered "free gift on orders above" offers or an unlock ladder ("₹500 more to unlock"), which build baskets */
+    while ((m = rx.exec(T))) { var v = +m[1].replace(/,/g, ""), near = T.slice(Math.max(0, m.index - 160), m.index + 160); if (v > price * 1.05 && !seen[v] && /click to copy|tap to copy|copy code|use code|apply code|coupon code|\bcode\s*:/i.test(near) && !/more to unlock|to unlock|get (?:it )?at \u20b9|add \u20b9[\d,]+ more/i.test(near)) { seen[v] = 1; out.push(v); } }
+    return out;
+  }
+  /* "1,450 orders in the last 7 days" made up by a script on the page (a date-seeded or random number), not order data */
+  function fakeCounterOf(html) {
+    var H = String(html || ""); if (!H) return "";
+    var rx = /(orders? (?:placed )?in (?:the )?last \d+\s*(?:days?|hours?)|(?:people|shoppers|customers) (?:are )?(?:viewing|looking at|watching)|sold in (?:the )?last \d+\s*(?:days?|hours?)|bought in (?:the )?last \d+\s*(?:days?|hours?))/gi, m;
+    while ((m = rx.exec(H))) {
+      var near = H.slice(Math.max(0, m.index - 4000), m.index + 6000);
+      var scripts = near.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+      for (var i = 0; i < scripts.length; i++) {
+        var sc = scripts[i];
+        if (/Math\.random\s*\(|get(?:UTC)?(?:Date|Hours|Minutes)\s*\(/.test(sc) && /(count|order|view|sold|target|number)/i.test(sc) && !/fetch\(|XMLHttpRequest|\/api\//.test(sc))
+          return m[0].replace(/\s+/g, " ");
+      }
+    }
+    return "";
+  }
   function rules4(R, ctx, qs, TR) {
     var P = R.page || {}, tr = ctx.trust || {}, sh = ctx.shop || null, f = (R.cro && R.cro.f) || null, out = {};
     function set(id, st, ev) { out[id] = { id: id, t: RULE_DEF[id].t, bad: RULE_DEF[id].bad, st: st, v: st === "pass" ? 1 : st === "partly" ? 0.5 : st === "fail" ? 0 : null, ev: ev || "", fix: RULE_DEF[id].fix, region: RULE_DEF[id].region }; }
@@ -656,13 +697,17 @@
     if (nb.length) set("price", "fail", nb[0].issue);
     else if (dp.length >= 2 && dp[0] - dp[dp.length - 1] <= 15) set("price", "fail", "The price area shows " + dp.map(function (x) { return x + "% off"; }).join(" and ") + ". Shoppers can't tell which is real.");
     else if (!P.prices && !(tr.product && tr.product.price) && !(sh && sh.stock && sh.stock.price)) set("price", "fail", "We couldn't find a price on the page.");
+    else if ((ctx.coupFar || []).length >= 2) set("price", "fail", (ctx.coupFar.length) + " coupons need a basket of ₹" + ctx.coupFar.map(function (v) { return v.toLocaleString("en-IN"); }).join(" or ₹") + ", above this product's price, so none apply to this purchase. They crowd the price for nothing.");
+    else if ((ctx.coupFar || []).length === 1) set("price", "partly", "A coupon needs a basket of ₹" + ctx.coupFar[0].toLocaleString("en-IN") + ", above this product's price, so it doesn't apply here.");
     else if (offers >= 3) set("price", "partly", offers + " offers are stacked around the price, so the final price takes working out.");
     else set("price", "pass", "One price and one discount.");
     /* 2. page and policies agree */
     var priceFailed = out.price && out.price.st === "fail";
     /* v14.1: only conflicts our scripts proved fail this rule; ones the AI reader spotted (often a menu or tag line) count as partly */
     var hard = TR.items.filter(function (i) { return i.k === "contra" && i.st !== "confirm" && !(priceFailed && /discount|% ?off|price/i.test(i.t + " " + i.ev)); }), soft = TR.items.filter(function (i) { return i.k === "contra_exc" || (i.k === "contra_ai" && i.st !== "confirm"); });
-    if (hard.length) set("agree", "fail", hard[0].t.replace(/[.\s]+$/, "") + (hard.length > 1 ? " (+" + (hard.length - 1) + " more)" : "") + ". " + hard[0].ev);
+    var selfC = ctx.selfC || [];
+    if (selfC.length) set("agree", "fail", selfC[0].t + (selfC.length > 1 ? " (+" + (selfC.length - 1) + " more)" : "") + ": " + selfC[0].ev + ".");
+    else if (hard.length) set("agree", "fail", hard[0].t.replace(/[.\s]+$/, "") + (hard.length > 1 ? " (+" + (hard.length - 1) + " more)" : "") + ". " + hard[0].ev);
     else if (soft.length) set("agree", "partly", soft[0].t.replace(/[.\s]+$/, "") + ". " + soft[0].ev);
     else set("agree", tr.facts || sh ? "pass" : "na", tr.facts || sh ? "No conflicts between the page and its policies." : "We couldn't read the policies.");
     /* 3. first screen */
@@ -707,7 +752,10 @@
     /* 6. returns */
     var q8 = Q.B08 || Q.B50, cl = tr.claims || {}, restr = fa.noReturns || fa.exchangeOnly || fa.damagedOnly;
     var stated = cl.returnDays || cl.easyReturns || (q8 && q8.g === "yes");
-    if (restr && FREE_REPL.test(restr.quote || "") && !fa.noReturns) set("returns", "pass", "Free replacement, no return fee: \u201c" + clip(restr.quote, 110) + "\u201d");
+    var pol = String(tr.policyText || ""), pageEasy = /easy (?:replacement|returns?|exchange)|hassle[- ]free (?:replacement|returns?)|no questions asked/i.exec(String(ctx.text.main || ""));
+    var polTight = /(?:do not|don.t|cannot|can.t|will not) (?:accept|offer)?\s*(?:any )?(?:exchanges?|returns?)|(?:unused|unopened)[^.]{0,40}sealed|sealed condition|seals?,? labels? intact/i.exec(pol);
+    if (pageEasy && polTight) set("returns", "fail", "The page promises “" + pageEasy[0] + "” but the policy says “" + clip(pol.slice(Math.max(0, polTight.index - 40), polTight.index + 80).trim(), 130) + "”. A defect usually shows only after opening.");
+    else if (restr && FREE_REPL.test(restr.quote || "") && !fa.noReturns) set("returns", "pass", "Free replacement, no return fee: \u201c" + clip(restr.quote, 110) + "\u201d");
     else if (stated && !restr) set("returns", "pass", cl.returnDays ? "The page states " + cl.returnDays.days + "-day returns." : "Returns are stated on the page.");
     else if (stated || restr || (q8 && q8.g === "partly") || (fa.returnDays || []).length) set("returns", "partly", restr ? "Returns are limited: “" + clip((restr.quote || ""), 110) + "”" : "Returns are mentioned but not stated plainly near the button.");
     else set("returns", "fail", "We couldn't find a returns or exchange promise.");
@@ -721,6 +769,7 @@
     var fake = TR.items.filter(function (i) { return i.k === "fake_urgency"; }), timer = TR.items.filter(function (i) { return i.k === "timer_app" || i.k === "timer_text"; });
     var px = sk && sk.price && sk.compareAt && sk.compareAt > sk.price ? Math.round(100 * (1 - sk.price / sk.compareAt)) : (tr.product && tr.product.compareAt && tr.product.price && tr.product.compareAt > tr.product.price ? Math.round(100 * (1 - tr.product.price / tr.product.compareAt)) : 0);
     if (fake.length) set("pressure", "fail", fake[0].ev || fake[0].t);
+    else if (ctx.text.fakeCount) set("pressure", "partly", "“" + ctx.text.fakeCount + "” is a number a script on the page makes up (from the date or at random), not real order data.");
     else if (px >= 70) set("pressure", "partly", px + "% off the MRP every day reads as an inflated MRP." + (timer.length ? " Plus a countdown." : ""));
     else if (timer.filter(function (x) { return x.k === "timer_text"; }).length) { var tt = timer.filter(function (x) { return x.k === "timer_text"; })[0]; set("pressure", "partly", tt.t + ": " + (tt.ev || "") + " Make sure it's real."); }
     else set("pressure", "pass", "No countdowns or made-up stock numbers.");
@@ -848,6 +897,9 @@
     var spd = speedOf(Mo.sp, fx);
     var x = cro == null ? null : spd == null ? cro : Math.exp(0.85 * Math.log(Math.max(5, croX)) + 0.15 * Math.log(Math.max(5, spd)));
     var overall = cro == null ? null : spd == null ? cro : Math.round(Math.exp(0.85 * Math.log(Math.max(5, cro)) + 0.15 * Math.log(Math.max(5, spd))));
+    /* v14.10: a page whose main image takes over 25s on a phone (Google's lab test) loses most shoppers before they see anything: cap at 55.
+       Lab times for Indian D2C stores often run 10-20s, so the bar sits well above that. */
+    if (overall != null && Mo.sp && Mo.sp.lcp > 25 && !fx.lcp && overall > 55) { overall = 55; if (x != null) x = Math.min(x, 55); }
     return { P: { rules: rv == null ? null : Math.round(rv), shoppers: sv == null ? null : Math.round(sv), proof: pv, speed: spd, mix: mix == null ? null : Math.round(mix) }, cro: cro, speed: spd, overall: overall, x: x };
   }
   function unreadOf(R, ctx) {
@@ -879,6 +931,10 @@
     /* a poor read: little text, and neither the real-browser render nor the script run added anything */
     ctx.poorRead = String(ctx.text.main || "").length < 2500 && !(ctx.text.render && ctx.text.render.ok) && !(ctx.text.live && ctx.text.live.ok && ctx.text.live.mode !== "same");
     ctx.partialRead = !(ctx.text.render && ctx.text.render.ok) && !(ctx.text.live && ctx.text.live.ok);
+    var allTxt = String(ctx.text.main || "") + " " + String(ctx.text.hid || "");
+    ctx.selfC = selfConflicts(allTxt);
+    var pr0 = (ctx.shop && ctx.shop.stock && ctx.shop.stock.price) || ((ctx.trust || {}).product && ctx.trust.product.price) || 0;
+    ctx.coupFar = couponsOutOfReach(String(ctx.text.main || ""), +pr0 || 0);
     var q13 = !lead && Q13 ? gradeQ13(R, ctx, cat) : null;
     var qs = q13 || gradeLib(R, ctx, cat);
     ctx.qList = q13 ? q13.list : "";
@@ -953,7 +1009,7 @@
       else if (i.k === "speed_est") fixes.push({ id: "s_est", kind: "speed", pillar: "speed", t: i.t, ev: i.ev, fix: i.fix, sev: "Should solve", region: "nav", e: { t: "none" }, nogain: true });
     });
     var Mo = { q: {}, pen: integItems.reduce(function (t, i) { return t + penOf(i); }, 0), integ: TR.score != null, cod: codFee.length ? 8 : 0, a11y: a11y, croS: croS,
-      sp: B.speed.est || B.speed.perf == null ? { est: true, estScore: B.speed.score } : { perf: B.speed.perf, b: B.speed.bands || {}, slow: !!B.speed.slow },
+      sp: B.speed.est || B.speed.perf == null ? { est: true, estScore: B.speed.score } : { perf: B.speed.perf, b: B.speed.bands || {}, slow: !!B.speed.slow, lcp: B.speed.vit ? B.speed.vit.lcp : null },
       fixes: fixes.map(function (f) { return { id: f.id, e: f.e }; }) };
     CRO_K.forEach(function (k) { var a = graded.filter(function (q) { return q.grp === k; }); Mo.q[k] = { W: a.reduce(function (t, q) { return t + q.w; }, 0), S: a.reduce(function (t, q) { return t + q.w * GSCORE[q.g]; }, 0) }; });
     var base = project(Mo, []);
@@ -1407,5 +1463,5 @@
     return md;
   }
 
-  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, qList: qList, setLearn: setLearn, mergeRender: mergeRender, hiddenOf: hiddenOf, NAMES: BR_NAME, project: project };
+  win.TrooGrowth = { catOf: catOf, pageText: pageText, mergeLive: mergeLive, build: build, render: render, wire: wire, markdown: markdown, appsOf: appsOf, marketOf: marketOf, subOf: subOf, qList: qList, setLearn: setLearn, fakeCounterOf: fakeCounterOf, mergeRender: mergeRender, hiddenOf: hiddenOf, NAMES: BR_NAME, project: project };
 })();

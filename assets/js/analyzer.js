@@ -1101,7 +1101,7 @@
     });
     gx.textP = Promise.all([staticP, Promise.resolve(S.liveP).catch(function () { return null; }), gx.renderP]).then(function (x) {
       var t = win.TrooGrowth && win.TrooGrowth.mergeLive ? win.TrooGrowth.mergeLive(x[0], x[1]) : x[0];
-      if (t && S.rawHtml && win.TrooGrowth.hiddenOf) { var rh = win.TrooGrowth.hiddenOf(S.rawHtml); if (rh) t.hid = ((t.hid ? t.hid + ". " : "") + rh).slice(0, 9000); }
+      if (t && S.rawHtml && win.TrooGrowth.hiddenOf) { var rh = win.TrooGrowth.hiddenOf(S.rawHtml); if (rh) t.hid = ((t.hid ? t.hid + ". " : "") + rh).slice(0, 9000); } if (t && S.rawHtml && win.TrooGrowth.fakeCounterOf) { try { t.fakeCount = win.TrooGrowth.fakeCounterOf(S.rawHtml); } catch (e) { /* ignore */ } }
       return win.TrooGrowth && win.TrooGrowth.mergeRender ? win.TrooGrowth.mergeRender(t, x[2]) : t;
     });
     return gx;

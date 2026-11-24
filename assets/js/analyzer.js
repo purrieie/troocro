@@ -2354,7 +2354,7 @@
     h += "</div></div>";
     return h;
   }
-  var LIST_NAME = { furniture: "Furniture", decor: "Décor", fashion: "Apparel", beauty: "Beauty", supplements: "Supplements", supports: "Body supports", food: "Food", fine: "Fine jewellery", fashionjewel: "Fashion jewellery", electronics: "Electronics", baby: "Baby & kids", pet: "Pet", sports: "Sports", other: "General" };
+  var LIST_NAME = { furniture: "Furniture", decor: "Décor", fashion: "Apparel", beauty: "Beauty", supplements: "Supplements", supports: "Body supports", food: "Food", fine: "Fine jewellery", fashionjewel: "Fashion jewellery", electronics: "Electronics", baby: "Baby & kids", pet: "Pet", sports: "Sports", other: "General", homecare: "Home care" };
   function gainTxt2(g) { return g == null ? "n/a" : g === 0.5 ? "<1" : "+" + g; }
   function wireWorkbench(root, R) {
     var wb = $(".wb", root); if (!wb) return;
@@ -2385,8 +2385,8 @@
       var r0 = a ? o0 * a : null, r1 = a ? o1 * a : null;
       $("[data-c-now]", calc).textContent = fmt(r0); $("[data-c-to]", calc).textContent = fmt(r1); $("[data-c-yr]", calc).textContent = r0 != null ? "+" + fmt((r1 - r0) * 12) : "–";
       $("[data-c-on]", calc).textContent = Math.round(o0).toLocaleString("en-IN") + " orders a month"; $("[data-c-tn]", calc).textContent = Math.round(o1).toLocaleString("en-IN") + " orders a month (+" + Math.round(lift * 1000) / 10 + "%)";
-      $$("[data-wb-lift]", wb).forEach(function (el) { el.textContent = r0 != null ? "+" + fmt(r1 - r0) + " / mo" : "Add your order value"; });
-      $$("[data-wb-lift-n]", wb).forEach(function (el) { el.textContent = "Conversion " + c + "% → " + (Math.round(c * (1 + lift) * 100) / 100) + "%"; });
+      $$("[data-wb-lift]", wb).forEach(function (el) { el.textContent = r0 == null ? "Add your order value" : lift <= 0 ? "Tick a CRO fix" : "+" + fmt(r1 - r0) + " / mo"; });
+      $$("[data-wb-lift-n]", wb).forEach(function (el) { el.textContent = lift <= 0 ? "Speed fixes aren't counted in this estimate" : "Conversion " + c + "% → " + (Math.round(c * (1 + lift) * 100) / 100) + "%"; });
       $$("[data-wb-lift-v]", wb).forEach(function (el) { el.textContent = Math.round(v).toLocaleString("en-IN"); });
     };
     $$("input", calc).forEach(function (i) { i.addEventListener("input", wb.wbCalc); });

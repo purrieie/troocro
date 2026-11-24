@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="v2.css">
 </head>
 <body>
-<div class="bar">New: the analyzer now grades your page against the full TrooCRO signal library</div>
+<div class="bar">New: your score now follows the same barrier analysis Troopod runs for its clients</div>
 <header class="nav">
   <a class="brand" href="../index.html"><img src="../assets/logos/troopod-mark-white.png" alt="" width="22" height="22"><span>TrooCRO</span></a>
   <nav class="pillnav" aria-label="Site"><a href="../index.html">Platform</a><a href="../analyze.html">Site analyzer</a><a href="./" aria-current="page">Page analyzer</a><a href="https://troopod.io">Troopod</a></nav>
@@ -42,17 +42,17 @@
     <div class="how">
       <ol class="hsteps">
         <li><span class="mono">01</span><b>Read</b><p>Page code, store data, a rendered copy and a phone screenshot.</p></li>
-        <li><span class="mono">02</span><b>Grade</b><p>Every check on the TrooCRO list gets pass, partly or fail, with evidence.</p></li>
-        <li><span class="mono">03</span><b>Score</b><p>The TrooCRO engine names the root cause and ranks each issue P0 to P2.</p></li>
-        <li><span class="mono">04</span><b>Compare</b><p>The same checks run on direct competitors, so you see your rank.</p></li>
+        <li><span class="mono">02</span><b>Ask</b><p>We put every question your shoppers ask before buying to the page, and keep the words that answer it.</p></li>
+        <li><span class="mono">03</span><b>Score</b><p>Fixed rules from Troopod's research turn those answers into one score and an ordered fix list.</p></li>
+        <li><span class="mono">04</span><b>Compare</b><p>Rival product pages get the same questions, so you see where you stand.</p></li>
       </ol>
       <div class="mock" aria-hidden="true">
-        <div class="mhead"><span class="mono">Sample report</span><span class="pill p">P0</span></div>
-        <div class="mscore"><span class="mono big">62</span><div><b>Needs improvement</b><p class="muted">Rank 3rd of 4</p></div></div>
-        <div class="mrow"><span class="mdot bad"></span>Ratings not visible on the first screen</div>
-        <div class="mrow"><span class="mdot warn"></span>Delivery date shown, returns buried</div>
-        <div class="mrow"><span class="mdot good"></span>Price and offer clear near the button</div>
-        <div class="mchip"><span class="mono">B13</span> Social validation · Trust deficit</div>
+        <div class="mhead"><span class="mono">Sample report</span><span class="pill p">+7 points</span></div>
+        <div class="mscore"><span class="mono big">48</span><div><b>Leaking sales</b><p class="muted">3rd of 4 against rival pages</p></div></div>
+        <div class="mrow"><span class="mdot bad"></span>&ldquo;Do other people endorse this?&rdquo; Not answered</div>
+        <div class="mrow"><span class="mdot warn"></span>&ldquo;What if it does not work out?&rdquo; Half answered</div>
+        <div class="mrow"><span class="mdot good"></span>&ldquo;Is this worth the money?&rdquo; Answered</div>
+        <div class="mchip">Fix first: show the rating and review count under the product name</div>
       </div>
     </div>
   </section>
@@ -82,8 +82,8 @@
     </div>
     <div class="tiles">
       <div class="tile"><div class="k mono" id="tChecks">0</div><div class="l">checks on the list</div></div>
-      <div class="tile"><div class="k mono bad" id="tFix">0</div><div class="l">to fix</div></div>
-      <div class="tile"><div class="k mono good" id="tPass">0</div><div class="l">passing</div></div>
+      <div class="tile"><div class="k mono bad" id="tFix">0</div><div class="l">questions left open</div></div>
+      <div class="tile"><div class="k mono good" id="tPass">0</div><div class="l">questions answered</div></div>
       <div class="tile"><div class="k mono" id="tDone">0 of 7</div><div class="l">agents done</div></div>
     </div>
     <div class="feed"><div class="ahead mono"><span>Activity</span><span>live</span></div><ul id="feed"></ul></div>
@@ -93,7 +93,7 @@
 </main>
 
 <footer class="foot">
-  <p>TrooCRO Analyzer v2. Gemini grades the page. The TrooCRO engine decides the score.</p>
+  <p>TrooCRO product page analyzer. An AI reads the page. Fixed rules from Troopod's research decide the score.</p>
   <p><a href="../index.html">Home</a> · <a href="../contact.html">Talk to Troopod</a></p>
 </footer>
 <script src="v2.js"></script>

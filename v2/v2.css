@@ -231,3 +231,22 @@ details.fold li b{color:var(--text);font-weight:600}
 .fade{animation:in .5s ease both}
 @keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.fade{animation:none}.track i{transition:none}.btn,.find{transition:none}}
+
+.q3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}
+.q3 div{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:4px}
+.q3 b{font-size:26px;line-height:1}.q3 span{color:var(--muted);font-size:13px}
+.find .h h3{font-size:18px;line-height:1.3}
+.find .r{grid-template-columns:1fr}
+@media(min-width:620px){.find .r{grid-template-columns:150px 1fr}}
+.find dt{font-family:var(--sans);font-size:13px}
+details.fx summary{cursor:pointer;font-weight:600}
+ul.fixes{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:10px}
+ul.fixes>li{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:14.5px;color:var(--text)}
+ul.fixes .fi{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px}
+ul.fixes .fi b{flex:1 1 200px}
+ul.fixes p{margin-top:4px}
+ul.fixes ul{margin:6px 0 0;padding-left:18px;color:var(--muted)}
+ul.okl{list-style:none;margin:0;padding:0;display:grid;gap:10px;font-size:15px}
+ul.okl li{border-bottom:1px solid var(--line);padding-bottom:10px;overflow-wrap:anywhere}
+ul.okl li:last-child{border-bottom:0;padding-bottom:0}
+details.fold ul.fixes{padding-left:0}

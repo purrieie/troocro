@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrooCRO Analyzer v2 | Product page CRO audit</title>
+<meta name="description" content="Paste a product page link. Get a scored CRO report in about two minutes, built on the TrooCRO engine.">
+<link rel="icon" href="../assets/logos/troopod-mark-purple.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Spline+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="v2.css">
+</head>
+<body>
+<div class="bar">New: the analyzer now grades your page against the full TrooCRO signal library</div>
+<header class="nav">
+  <a class="brand" href="../index.html"><img src="../assets/logos/troopod-mark-white.png" alt="" width="22" height="22"><span>TrooCRO</span></a>
+  <nav class="pillnav" aria-label="Site"><a href="../index.html">Platform</a><a href="../analyze.html">Site analyzer</a><a href="./" aria-current="page">Page analyzer</a><a href="https://troopod.io">Troopod</a></nav>
+  <a class="btn light sm" href="../contact.html">Book a demo</a>
+</header>
+
+<main>
+  <section class="hero" id="hero">
+    <p class="eyebrow"><span class="mono">v2</span> Product page analyzer</p>
+    <h1>Find what stops shoppers <span class="hl">buying</span> on your product page</h1>
+    <p class="lede">Paste one product link. Our agents read the page like a phone shopper, grade it against the TrooCRO checklist, time it on a phone and compare it with direct competitors.</p>
+    <form id="form" class="analyzer" novalidate>
+      <label class="sr" for="url">Product page link</label>
+      <input id="url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https:// your product page" required>
+      <button class="btn primary" type="submit">Analyze page</button>
+    </form>
+    <p class="reassure">Analyze your page. Takes about 2 minutes. No login.</p>
+    <details class="opt">
+      <summary>Compare against pages you choose (optional)</summary>
+      <p class="muted">Leave these empty and we pick up to three direct competitors for you.</p>
+      <input class="comp" type="url" inputmode="url" placeholder="https:// competitor product page 1">
+      <input class="comp" type="url" inputmode="url" placeholder="https:// competitor product page 2">
+      <input class="comp" type="url" inputmode="url" placeholder="https:// competitor product page 3">
+    </details>
+    <p id="err" class="err" role="alert" hidden></p>
+
+    <div class="how">
+      <ol class="hsteps">
+        <li><span class="mono">01</span><b>Read</b><p>Page code, store data, a rendered copy and a phone screenshot.</p></li>
+        <li><span class="mono">02</span><b>Grade</b><p>Every check on the TrooCRO list gets pass, partly or fail, with evidence.</p></li>
+        <li><span class="mono">03</span><b>Score</b><p>The TrooCRO engine names the root cause and ranks each issue P0 to P2.</p></li>
+        <li><span class="mono">04</span><b>Compare</b><p>The same checks run on direct competitors, so you see your rank.</p></li>
+      </ol>
+      <div class="mock" aria-hidden="true">
+        <div class="mhead"><span class="mono">Sample report</span><span class="pill p">P0</span></div>
+        <div class="mscore"><span class="mono big">62</span><div><b>Needs improvement</b><p class="muted">Rank 3rd of 4</p></div></div>
+        <div class="mrow"><span class="mdot bad"></span>Ratings not visible on the first screen</div>
+        <div class="mrow"><span class="mdot warn"></span>Delivery date shown, returns buried</div>
+        <div class="mrow"><span class="mdot good"></span>Price and offer clear near the button</div>
+        <div class="mchip"><span class="mono">B13</span> Social validation · Trust deficit</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="run" id="run" hidden>
+    <p class="eyebrow mono"><i class="gridic"></i>TrooCRO agents at work</p>
+    <div class="runtop">
+      <h1 id="runTitle">Reading <span class="hl" id="runHost"></span></h1>
+      <div class="rstat"><span class="pill livep"><i class="dot"></i><span id="runState">Scanning</span></span><span class="mono muted" id="elapsed">0:00 elapsed</span></div>
+    </div>
+    <div class="prog"><div class="track"><i id="progBar"></i></div><span class="mono muted" id="progPct">0% done</span></div>
+    <div id="ask" class="card ask" hidden></div>
+    <div class="stage">
+      <div class="frame">
+        <div class="fbar"><span class="dots"><i></i><i></i><i></i></span><span class="furl mono" id="furl"></span><span class="livebadge mono"><i class="dot r"></i>LIVE</span></div>
+        <div class="view" id="view">
+          <div class="skel" id="skel"><i></i><i></i><i></i><i></i><p class="mono">Opening the page on a phone</p></div>
+          <div class="phone" id="phone" hidden><img id="shot" alt="Phone screenshot of the page being read"><div class="scanband" id="band"><span class="tag" id="tag"></span><i class="line"></i></div></div>
+          <div class="cur" id="cur1"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 1l11 6-5 1.4L6.4 14z" fill="#FFFFFF"/></svg><span>Grader</span></div>
+          <div class="cur c2" id="cur2"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 1l11 6-5 1.4L6.4 14z" fill="#B8B3C4"/></svg><span>Reader</span></div>
+        </div>
+      </div>
+      <aside class="agents">
+        <div class="ahead mono"><span>Your agents</span><span id="aw">0 working</span></div>
+        <div id="alist"></div>
+      </aside>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="k mono" id="tChecks">0</div><div class="l">checks on the list</div></div>
+      <div class="tile"><div class="k mono bad" id="tFix">0</div><div class="l">to fix</div></div>
+      <div class="tile"><div class="k mono good" id="tPass">0</div><div class="l">passing</div></div>
+      <div class="tile"><div class="k mono" id="tDone">0 of 7</div><div class="l">agents done</div></div>
+    </div>
+    <div class="feed"><div class="ahead mono"><span>Activity</span><span>live</span></div><ul id="feed"></ul></div>
+  </section>
+
+  <section id="report" hidden></section>
+</main>
+
+<footer class="foot">
+  <p>TrooCRO Analyzer v2. Gemini grades the page. The TrooCRO engine decides the score.</p>
+  <p><a href="../index.html">Home</a> · <a href="../contact.html">Talk to Troopod</a></p>
+</footer>
+<script src="v2.js"></script>
+</body>
+</html>

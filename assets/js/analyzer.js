@@ -1161,7 +1161,7 @@
       shopFacts(r, tr).slice(0, 6).forEach(function (x) { facts.push(x); });
       var slim = function (q) { var o = { id: q.id, q: q.q, good: q.good }; if (q.c) o.c = q.c; return o; };
       return gapi("/grade", { url: r.url, v: "13b", cat: cat, list: L.key, product: prod.title || t.h1 || "", price: prod.price ? "Rs " + prod.price : "", facts: facts.join("; "), text: text.slice(0, 12000), policy: tr.policyText || "",
-        qs: L.qs.map(slim), adds: L.adds.map(function (a) { return { n: a.n, qs: a.qs.map(slim) }; }), rules: L.rules, shots: shots, t: CFG.shopTest || undefined }, 90000, CFG.grade || String(CFG.growth || "").replace(/\/+$/, "") + "-grade")
+        qs: L.qs.map(slim), adds: L.adds.map(function (a) { return { n: a.n, qs: a.qs.map(slim) }; }), rules: (p.currency && p.currency !== "INR" ? ["This store sells outside India: a free-shipping threshold, shipping cost or 'ships in X days' answers the delivery question; cash on delivery is not expected. A stated N-day return window or a satisfaction/money-back guarantee answers the returns question."] : []).concat(L.rules), shots: shots, t: CFG.shopTest || undefined }, 90000, CFG.grade || String(CFG.growth || "").replace(/\/+$/, "") + "-grade")
         .then(function (d) { if (d && d.grades) { d.list = L.key; d.cat = cat; d.learned = !!L.learned; d.learnRev = x[5] && x[5].rev || ""; } return d && d.grades ? d : null; });
     });
   }
@@ -2354,7 +2354,7 @@
     h += "</div></div>";
     return h;
   }
-  var LIST_NAME = { furniture: "Furniture", decor: "Décor", fashion: "Apparel", beauty: "Beauty", supplements: "Supplements", supports: "Body supports", food: "Food", fine: "Fine jewellery", fashionjewel: "Fashion jewellery", electronics: "Electronics", baby: "Baby & kids", pet: "Pet", sports: "Sports", other: "General", homecare: "Home care" };
+  var LIST_NAME = { furniture: "Furniture", decor: "Décor", fashion: "Apparel", beauty: "Beauty", supplements: "Supplements", supports: "Body supports", food: "Food", fine: "Fine jewellery", fashionjewel: "Fashion jewellery", electronics: "Electronics", baby: "Baby & kids", pet: "Pet", sports: "Sports", other: "General", homecare: "Home care", makeup: "Makeup", bags: "Bags & luggage" };
   function gainTxt2(g) { return g == null ? "n/a" : g === 0.5 ? "<1" : "+" + g; }
   function wireWorkbench(root, R) {
     var wb = $(".wb", root); if (!wb) return;

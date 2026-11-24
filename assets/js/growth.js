@@ -289,6 +289,13 @@
     var V = Q13.variant[cat] || Q13.variant.Other, key = V.d, found = false;
     var lr = learnedRoute(s || "");
     if (lr) { key = lr; found = true; }
+    /* v14.12: some products are what their title says, whatever category the AI or our keywords picked: a bunion corrector is a
+       body support and a magic eraser is home care even if the store files them under footwear or furniture */
+    if (!found && s) [["supports", "Health & Wellness"], ["homecare", "Home & Living"], ["bags", "Fashion & Apparel"]].some(function (g) {
+      var vv = (Q13.variant[g[1]] || { v: [] }).v.filter(function (x) { return x[0] === g[0]; })[0]; if (!vv) return false;
+      var rx = vv[1].slice(0, 2) === "T:" ? vv[1].slice(2) : vv[1];
+      if (new RegExp(rx, "i").test(s)) { key = g[0]; found = true; } return found;
+    });
     /* a pattern starting "T:" is tested on the product title only (store menus name every product the store sells) */
     [s, more || ""].forEach(function (x, xi) { for (var i = 0; !found && x && i < V.v.length; i++) { var rx = V.v[i][1], t1 = rx.slice(0, 2) === "T:"; if (t1 && xi) continue; if (new RegExp(t1 ? rx.slice(2) : rx, "i").test(x)) { key = V.v[i][0]; found = true; } } });
     var adds = (Q13.adds[key] || []).map(function (a) { return { n: a.n, rx: a.rx, qs: a.qs }; });
@@ -639,7 +646,7 @@
     pressure: { t: "No fake pressure", bad: "Pressure that looks fake", region: "price", fix: "Use real end dates and real stock. Drop always-on countdowns and inflated MRPs." }
   };
   var RULE_ORDER = ["price", "agree", "first", "reviews", "delivery", "returns", "stock", "pressure"];
-  var OFFX = /(code|coupon|extra|above|over ₹|orders?\b|prepaid|upi|bank|cart value|purchase of|or more|buy \d|up ?to|upto|\bmin\b|minimum|first order|\bapp\b|sitewide|member|stone|making|on \d|items)/i;
+  var OFFX = /(code|coupon|extra|above|over ₹|over \$|cases?\b|packs?\b|black friday|cyber monday|bfcm|holiday|when you buy|subscri|orders?\b|prepaid|upi|bank|cart value|purchase of|or more|buy \d|up ?to|upto|\bmin\b|minimum|first order|\bapp\b|sitewide|member|stone|making|on \d|items)/i;
   var FISHY = /(no critical|no negative|no bad|only (?:5|five)|different product|other products?|not about|free product|sent me|exchange for|in exchange|gifted|same review|duplicate|repeated|another language|other language|french|german|store visitor|not verified|unverified)/i;
 
   /* v14.10: does the page contradict itself? Same fact, two different values on one page. */
@@ -748,13 +755,16 @@
     if (f && f.delivery_near) set("delivery", "pass", "Delivery information sits next to the button.");
     else if (q9 && q9.g === "yes") set("delivery", "pass", (q9.ev[0] || "Delivery time is on the page."));
     else if ((q9 && q9.g === "partly") || fa.deliveryDays) set("delivery", "partly", q9 && q9.g === "partly" && q9.ev[0] ? q9.ev[0] : "Delivery time is only in the shipping policy.");
+    else if (ctx.mkt && ctx.mkt !== "IN" && /free (?:standard |ground )?shipping|ships? (?:in|within) \d|arrives? (?:in|by)|delivery (?:in|within) \d|shipping (?:on|over|for) (?:orders?|all)/i.test(String(ctx.text.main || ""))) set("delivery", "pass", "Shipping is stated on the page (" + (String(ctx.text.main || "").match(/free (?:standard |ground )?shipping[^.]{0,40}|ships? (?:in|within) [^.]{0,30}|arrives? (?:in|by)[^.]{0,30}|delivery (?:in|within) [^.]{0,30}|shipping (?:on|over|for) [^.]{0,30}/i) || [""])[0].trim() + "). Outside India shoppers expect cost or a threshold here; the date comes at checkout.");
     else set("delivery", "fail", "We couldn't find a delivery time on the page.");
     /* 6. returns */
     var q8 = Q.B08 || Q.B50, cl = tr.claims || {}, restr = fa.noReturns || fa.exchangeOnly || fa.damagedOnly;
     var stated = cl.returnDays || cl.easyReturns || (q8 && q8.g === "yes");
     var pol = String(tr.policyText || ""), pageEasy = /easy (?:replacement|returns?|exchange)|hassle[- ]free (?:replacement|returns?)|no questions asked/i.exec(String(ctx.text.main || ""));
     var polTight = /(?:do not|don.t|cannot|can.t|will not) (?:accept|offer)?\s*(?:any )?(?:exchanges?|returns?)|(?:unused|unopened)[^.]{0,40}sealed|sealed condition|seals?,? labels? intact/i.exec(pol);
+    var usGuar = ctx.mkt && ctx.mkt !== "IN" ? /free (?:&|and )?(?:easy )?returns|free returns|\d{2,3}[- ](?:day|night) (?:returns?|money[- ]back|guarantee|trial|free returns)|(?:satisfaction|happiness) guarantee|money[- ]back guarantee|love it or (?:return|send) it/i.exec(String(ctx.text.main || "")) : null;
     if (pageEasy && polTight) set("returns", "fail", "The page promises “" + pageEasy[0] + "” but the policy says “" + clip(pol.slice(Math.max(0, polTight.index - 40), polTight.index + 80).trim(), 130) + "”. A defect usually shows only after opening.");
+    else if (usGuar) set("returns", "pass", "The page promises \u201c" + usGuar[0] + "\u201d.");
     else if (restr && FREE_REPL.test(restr.quote || "") && !fa.noReturns) set("returns", "pass", "Free replacement, no return fee: \u201c" + clip(restr.quote, 110) + "\u201d");
     else if (stated && !restr) set("returns", "pass", cl.returnDays ? "The page states " + cl.returnDays.days + "-day returns." : "Returns are stated on the page.");
     else if (stated || restr || (q8 && q8.g === "partly") || (fa.returnDays || []).length) set("returns", "partly", restr ? "Returns are limited: “" + clip((restr.quote || ""), 110) + "”" : "Returns are mentioned but not stated plainly near the button.");
@@ -812,7 +822,7 @@
   /* Proof on the page: what a careful shopper can check besides reviews (tests, certificates, awards, other platforms;
      specs and materials; results with numbers). Brand equity counts as proof for household names and well-known premium brands. */
   var FREE_REPL = /replace(?:ment)?[^.]{0,90}(?:free of charge|no (?:return |extra )?(?:fee|charge|cost)|at no (?:extra )?cost|\bfree\b)|free (?:of charge )?replacement/i;
-  var NOCERT = { furniture: 1, decor: 1, fashion: 1, fashionjewel: 1 };
+  var NOCERT = { furniture: 1, decor: 1, fashion: 1, fashionjewel: 1, bags: 1 };
   var CRAFT_RX = /\d+[- ](?:year|month)s? warranty|warranty|hand[- ]?(?:made|woven|crafted|knotted|carved|tufted|block[- ]printed|embroidered)|artisans?|kiln[- ]dried|solid (?:wood|sheesham|teak|mango)|customer photos|experience (?:centre|center|store)|our stores?|showroom|since (?:19|20)\d\d|\d+\+? years? of (?:craft|experience)|anti[- ]tarnish warranty|stain[- ]resistant|termite[- ](?:proof|resistant)/gi;
   var PROOF_FIX = { furniture: "Show what proves the build: close-ups of the wood and joints, the warranty in years, room photos from buyers, and your stores or press.", decor: "Show what proves the quality: close-ups of the finish, the maker or craft behind it, buyer photos at home and any press.", fashion: "Show what proves the quality: fabric close-ups, fit notes from reviews, buyer photos and ratings from Myntra or Ajio.", fashionjewel: "Show what proves the quality: plating details, an anti-tarnish warranty, buyer photos after weeks of wear." };
   var PROOF_RX = /clinical(?:ly)?|\b(?:scientific|independent|published|research)\s+stud(?:y|ies)\b|\bstud(?:y|ies)\s+(?:show|shows|showed|found|proves?|confirm(?:s|ed)?)\b|volunteers|participants|dermatologist[- ](?:tested|approved)|lab[- ]tested|third[- ]party|certified|certificate|hallmark|\bbis\b|\bigi\b|\bgia\b|\bisi\b|fssai|\biso\b|\bgmp\b|ayush|patent|award|as seen (?:in|on)|featured in|bee \d|\d[- ]star (?:rated|energy)|organic certified|india organic|usda|great taste|peta|vegan society|oeko|gots/gi;
@@ -837,7 +847,7 @@
     if (RV && RV.cnt >= 500 && RV.rating >= 4.2 && !RV.perfect && !RV.fishy) add("scale", true, 20, RV.cnt.toLocaleString("en-IN") + " reviews at " + (+RV.rating).toFixed(1) + "★");
     /* v14.9: only product results count fully (percent of users, before/after, tested on N people). A store-wide
        "10 lakh+ happy customers" line is cheap to write and says nothing about this product: small credit, own row. */
-    var resOk = /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers)|tested on \d+|\d+ (?:volunteers|participants|subjects)|\bday 0\b|(?:week|day|month)s? \d+\b[^.]{0,40}(?:result|visible|reduc|improv)/i.test(t);
+    var resOk = /\d{2,3}\s?% (?:of )?(?:users|people|participants|women|men|customers|volunteers|testers|subjects)|\d{2,3}\s?% (?:agreed|saw|noticed|said|reported|felt|experienced)|tested on \d+|\d+ (?:volunteers|participants|subjects)|\bday 0\b|(?:week|day|month)s? \d+\b[^.]{0,40}(?:result|visible|reduc|improv)/i.test(t);
     var baOnly = !resOk && /before\s*(?:&|and|\/)\s*after/i.test(t);
     add("results", resOk || baOnly, resOk ? 20 : 8, resOk ? "Product results with numbers" : baOnly ? "Before and after, without numbers" : "Product results with numbers");
     if (!resOk && !baOnly && /(?:trusted by|loved by|over|more than)?\s*\d[\d.,]*\s*(?:lakh|l\+|k\+|mn|million|crore)\+?\s*(?:happy |satisfied )?(?:customers|users|buyers)/i.test(t)) add("crowd", true, 6, "A store-wide customer count");
@@ -849,7 +859,10 @@
     if (codes >= 2 || (price && minBuy >= 3 * price)) it.push({ k: "clutter", ok: false, bad: true, label: price && minBuy >= 3 * price ? "Offers for baskets far above this price" : "Coupon codes crowd the price" });
     raw = clamp(Math.round(raw), 0, 100);
     var known = sh && sh.brand_known, tier = sh && sh.price_tier;
-    var carry = known === "household" ? 80 : known === "well-known" && (tier === "premium" || tier === "luxury") ? 75 : 0;
+    var mkt = ctx.mkt || "IN";
+    /* India keeps the calibrated floor (it broke good/bad separation when softened); outside India a well-known brand at any price
+       tier gets a gentler floor, since "premium" tags there are noisier and mid-priced household names (Glossier, Allbirds) count */
+    var carry = known === "household" ? (mkt === "IN" ? 80 : 60) : known === "well-known" ? (mkt === "IN" ? (tier === "premium" || tier === "luxury" ? 75 : 0) : 45) : 0;
     var lv = ctx.text.live || null;
     /* proof we couldn't find on a page we could barely read is left out, not scored low */
     if (ctx.poorRead && raw < 40 && !carry) return { score: null, raw: raw, carry: 0, unread: true, known: known || "", tier: tier || "", items: it.map(function (x) { return x.ok ? x : Object.assign({}, x, { unk: true }); }), live: "" };
@@ -899,7 +912,9 @@
     var overall = cro == null ? null : spd == null ? cro : Math.round(Math.exp(0.85 * Math.log(Math.max(5, cro)) + 0.15 * Math.log(Math.max(5, spd))));
     /* v14.10: a page whose main image takes over 25s on a phone (Google's lab test) loses most shoppers before they see anything: cap at 55.
        Lab times for Indian D2C stores often run 10-20s, so the bar sits well above that. */
-    if (overall != null && Mo.sp && Mo.sp.lcp > 25 && !fx.lcp && overall > 55) { overall = 55; if (x != null) x = Math.min(x, 55); }
+    /* v14.15: a page that answers shoppers very well (CRO 85+) is capped at 70, not 55: the lab number alone shouldn't sink a strong page */
+    var lcpCap = cro != null && cro >= 85 ? 70 : 55;
+    if (overall != null && Mo.sp && Mo.sp.lcp > 25 && !fx.lcp && overall > lcpCap) { overall = lcpCap; if (x != null) x = Math.min(x, lcpCap); }
     return { P: { rules: rv == null ? null : Math.round(rv), shoppers: sv == null ? null : Math.round(sv), proof: pv, speed: spd, mix: mix == null ? null : Math.round(mix) }, cro: cro, speed: spd, overall: overall, x: x };
   }
   function unreadOf(R, ctx) {
@@ -922,6 +937,8 @@
     var sub = subOf(cat, [P.title, ctx.text.h1, prod.title, prod.type, (prod.tags || []).join(" "), (P.h1 || []).join(" ")].join(" ") + " " + ctx.text.main.slice(0, 3000));
     var mk = marketOf(R);
     if (ctx.shop && ctx.shop.market === "IN" && mk !== "IN") mk = "IN";
+    /* v14.15: a US/UK store shows rupees to a visitor from India; the AI reader knows the store's home market, so trust it over the currency */
+    if (ctx.shop && (ctx.shop.market === "US" || ctx.shop.market === "UK") && mk === "IN" && !/\.in$/i.test(String((R.host || P.host || "")).replace(/\/.*$/, ""))) mk = ctx.shop.market;
     var season = seasonOf(mk);
     ctx.mk = mk;
     ctx.season = season;
@@ -933,6 +950,7 @@
     ctx.partialRead = !(ctx.text.render && ctx.text.render.ok) && !(ctx.text.live && ctx.text.live.ok);
     var allTxt = String(ctx.text.main || "") + " " + String(ctx.text.hid || "");
     ctx.selfC = selfConflicts(allTxt);
+    ctx.mkt = ctx.mk || "IN";
     var pr0 = (ctx.shop && ctx.shop.stock && ctx.shop.stock.price) || ((ctx.trust || {}).product && ctx.trust.product.price) || 0;
     ctx.coupFar = couponsOutOfReach(String(ctx.text.main || ""), +pr0 || 0);
     var q13 = !lead && Q13 ? gradeQ13(R, ctx, cat) : null;

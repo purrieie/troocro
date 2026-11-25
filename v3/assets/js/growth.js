@@ -1528,7 +1528,8 @@
       qs.push(o); byId[q.id] = o;
     });
     var Mo = { v3: true, b: qs.map(function (q) { return { id: q.id, w: q.w, g: q.g === "yes" ? "met" : q.g === "partly" ? "partial" : q.g === "no" ? "missing" : "unread" }; }),
-      anchors: (S.scale && S.scale.anchors) || [[0, 0], [100, 100]], wp: (S.scale && S.scale.weight_power) || 1, speed: V.speed && V.speed.score != null ? V.speed.score : null };
+      /* the server sends its scale; older servers don't, so fall back to scoring 2.1-b4's fitted anchors */
+      anchors: (S.scale && S.scale.anchors) || [[0, 0], [13.2, 0], [100, 93]], wp: (S.scale && S.scale.weight_power) || 1, speed: V.speed && V.speed.score != null ? V.speed.score : null };
     var base = projectV3(Mo, []);
     /* fixes: one row per open barrier (the change comes from the engine's fix library), biggest score gain first */
     var open = qs.filter(function (q) { return q.g === "no" || q.g === "partly"; });

@@ -5,7 +5,7 @@
 // ?render=1 returns the page as a real browser drew it (scripts run, page scrolled): Cloudflare Browser Rendering when its
 // token is set (CF_ACCOUNT_ID, CF_API_TOKEN; dormant until those secrets exist), else the free r.jina.ai reader. With Cloudflare
 // the page is also scrolled and its tabs and accordions are tapped (TAP_SCRIPT). Neither gets past a site that blocks bots.
-const ALLOWED_ORIGINS = [/^https:\/\/purrieie\.github\.io$/, /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
+const ALLOWED_ORIGINS = [/^https:\/\/purrieie\.github\.io$/, /^https:\/\/(www\.)?troopod\.io$/, /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 TrooCRO-Analyzer/1.0";
 const MAX = 3_000_000;
 function cors(origin: string | null) {

@@ -125,6 +125,15 @@
     S.url = u; S.host = hostOf(u); S.detected = null; S.mode = "live";
     S.scanP = api("/scan", { url: u }, { timeout: 45000 }).then(function (r) { S.detected = r; onDetected(r); return r; });
     S.scanP.catch(function (e) { if (doc.body.getAttribute("data-an-view") === "questions") showError(e); });
+    /* v3: the quiz's category comes from the v3 reader, not the old keyword guess */
+    S.v3cat = null; S.v3checks = null;
+    if (CFG.v3) v3call("/scan", { url: u, suggest: false }, 60000).then(function (d) {
+      if (!d || S.url !== u) return;
+      S.v3cat = CATS.indexOf(d.category) >= 0 ? d.category : null; S.v3checks = d.checklist || null;
+      v3Facts();
+      var q = QS[qi];
+      if (q && q.id === "category" && QA.category === undefined && doc.body.getAttribute("data-an-view") === "questions") renderQ(qi, 0);
+    });
     setupQuestions();
     show("questions");
     setQuery("url=" + encodeURIComponent(u.replace(/^https?:\/\//, "").replace(/\/$/, "")));
@@ -163,7 +172,15 @@
     var txt = [p.title, p.description, p.heroHeadline, p.primaryCta].join(" ");
     return !!p.lead || (!p.prices && !p.aov && /401\(k\)|retirement|pension|insurance|\bloans?\b|lending|mutual fund|invest(?:ing|ment)|payroll|software|platform|\bsaas\b|book a demo|request a demo|get a quote|clinic|hospital|consult/i.test(txt));
   }
+  function v3Facts() {
+    $$("[data-qz-facts] li").forEach(function (li) {
+      var k = li.querySelector("span"), v = li.querySelector("b"); if (!k || !v) return;
+      if (k.textContent === "Category") v.textContent = S.v3cat || "Reading…";
+      if (k.textContent === "Checks lined up" && S.v3checks) v.textContent = String(S.v3checks);
+    });
+  }
   function detectedFor(id) {
+    if (id === "category" && CFG.v3) return S.v3cat || null;
     var p = (S.detected && S.detected.page) || {};
     if (id === "category") return nonStore(p) ? null : CATS.indexOf(p.category) >= 0 ? p.category : null;
     if (id === "aovBand") return p.aovBand || null;
@@ -220,6 +237,7 @@
   function choose(v) {
     var q = QS[qi]; if (!q || q.type === "comp") return;
     QA[q.id] = v;
+    if (q.id === "category") QA.catPicked = true; // a tap is the shopper's own choice; OK on the default is not
     $$(".qz-opt", stageEl.lastElementChild).forEach(function (b) { var on = b.getAttribute("data-v") === String(v); b.classList.toggle("on", on); b.setAttribute("aria-checked", on); if (on) { b.classList.remove("pop"); void b.offsetWidth; b.classList.add("pop"); } });
     clearTimeout(advT);
     advT = setTimeout(nextQ, reduced ? 60 : 420);
@@ -248,7 +266,7 @@
       aovBand: skip ? (det.aovBand || "") : (QA.aovBand || det.aovBand || ""),
       goal: skip ? "conversion" : (QA.goal || "conversion"),
       visitors: skip ? 0 : (+QA.visitors || 0),
-      catYou: !skip && !!QA.category,
+      catYou: !skip && (CFG.v3 ? !!QA.catPicked : !!QA.category),
       traffic: skip ? "" : (QA.traffic || ""),
       ad: skip ? "" : String(QA.ad || "").replace(/\s+/g, " ").trim().slice(0, 160),
       competitors: comps.slice(0, 2)
@@ -304,6 +322,7 @@
     shot.innerHTML = '<div class="wire on"><span class="wh">' + esc((p.heroHeadline || p.title || "").slice(0, 80)) + '</span><i class="w2"></i><i class="w3"></i><span class="wcta">' + esc(p.primaryCta || "") + "</span></div>";
     if (/^https:\/\//i.test(og)) { var img = new Image(); img.alt = ""; img.onload = function () { shot.insertBefore(img, shot.firstChild); shot.classList.add("has-img"); }; img.src = og; }
     var q = QS[qi];
+    if (CFG.v3) v3Facts();
     if (q && (q.id === "category" || q.id === "aovBand") && QA[q.id] === undefined && doc.body.getAttribute("data-an-view") === "questions") renderQ(qi, 0);
   }
 

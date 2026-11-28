@@ -128,7 +128,7 @@
     S.scanP.catch(function (e) { if (!CFG.audit && doc.body.getAttribute("data-an-view") === "questions") showError(e); }); /* audit mode reads the page in a browser: a failed quick fetch is not fatal */
     /* v3: the quiz's category comes from the v3 reader, not the old keyword guess */
     S.v3cat = null; S.v3checks = null; S.v3price = null;
-    S.auditReadP = CFG.audit ? v3call("/audit_read", { url: u }, 90000) : null; /* full read starts now; the quiz only needs the quick category */
+    S.auditReadP = CFG.audit ? auditRead(u) : null; /* full read starts now; the quiz only needs the quick category */
     if (CFG.v3) (CFG.audit ? v3call("/audit_peek", { url: u }, 30000) : v3call("/scan", { url: u, suggest: false }, 60000)).then(function (d) {
       if (!d || S.url !== u) return;
       S.v3cat = CATS.indexOf(d.category) >= 0 ? d.category : null; S.v3checks = d.checklist || null;
@@ -1280,6 +1280,21 @@
   }
   /* v3: one call path to the engine-faithful API (TrooCRO engine verbatim, Barrier Library score, quote check).
      scan (category + competitors) -> grade + PageSpeed for this page and each competitor, in parallel -> report */
+  /* The real-browser read can take up to ~3 minutes on the free host, longer than one backend request may last, so the
+     backend answers "pending" and this asks again (the backend picks up the same read, it does not start a new one). */
+  function auditRead(u) {
+    var tries = 0;
+    function go() {
+      return v3call("/audit_read", { url: u }, 140000).then(function (d) {
+        if (d && d.pending) {
+          if (++tries < 4) { if (S.running && tries === 1) addFeed("act", "Still reading the page in a real browser", "The first read of a page can take up to 3 minutes", "", "reader"); return go(); }
+          S.v3Err = d.reason || "The page took too long to read."; return null;
+        }
+        return d;
+      });
+    }
+    return go();
+  }
   function v3call(path, body, ms) {
     var B = String((/^\/audit_/.test(path) && CFG.auditApi) || CFG.v3 || "").replace(/\/+$/, "");
     if (!B || !win.AbortController) return Promise.resolve(null);
@@ -1287,7 +1302,7 @@
     if (S.capture && /^\/audit_/.test(path)) body = Object.assign({ capture: S.capture }, body);
     return fetch(B + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal })
       .then(function (x) { return x.json(); })
-      .then(function (d) { clearTimeout(t); if (d && d.ok !== false) return d; S.v3Err = (d && d.reason) || S.v3Err || ""; return null; })
+      .then(function (d) { clearTimeout(t); if (d && (d.ok !== false || d.pending)) return d; S.v3Err = (d && d.reason) || S.v3Err || ""; return null; })
       .catch(function () { clearTimeout(t); return null; });
   }
   function startV3(r) {
@@ -1311,7 +1326,7 @@
      (engine, second read, changes written for the buyer). No partial result: any failed step fails the audit. */
   function startAudit(r) {
     var I = S.inputs || {};
-    S.auditP = Promise.resolve(S.auditReadP || v3call("/audit_read", { url: S.url }, 90000)).then(function (rd) {
+    S.auditP = Promise.resolve(S.auditReadP || auditRead(S.url)).then(function (rd) {
       if (!rd) return { failed: S.v3Err || "The page could not be read." };
       var url = rd.url || S.url, cat = I.category || rd.category || "Other";
       if (S.running) addFeed("act", "Opened the page for the audit", rd.reader === "browser" ? "Every collapsed section opened" + (rd.postcode ? ", delivery checked for " + rd.postcode : "") : "Read the page as it loads", "", "barrier");

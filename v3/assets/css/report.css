@@ -505,3 +505,11 @@ body.an-app a, body.an-app button, body.an-app [role="tab"] { -webkit-tap-highli
 .rx-oth-cannot_tell > summary b::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #E8B04B; margin-right: 10px; vertical-align: 2px; }
 .rx-oth-not_applicable > summary b::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #55555D; margin-right: 10px; vertical-align: 2px; }
 @media (max-width: 720px) { .rx-fgnote { padding: 0 16px 10px; } .rx-ocause { display: none; } }
+
+/* AI context layer */
+.rx-aitag { font-style: normal; font-size: 11px; font-weight: 500; color: #B7ACFA; border: 1px solid #3A3260; background: #1A1730; padding: 1px 7px; border-radius: 999px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
+.rx-aitag.bad { color: #F5CD7A; border-color: #4A3A1C; background: #2A2110; }
+.rx-lib { font-size: 12px; color: #9A9AA3; font-family: var(--f-mono); }
+.rx-aiwhy { color: #F5CD7A !important; }
+.rx-misfit { opacity: .78; }
+.rx-pill.p-ok { color: #86EFAC; background: #0F2017; border-color: #1E3A28; }

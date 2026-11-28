@@ -41,7 +41,7 @@
     if (miss.length || part.length) x += '<section class="rx-sec">' + head("Open buyer doubts", "Questions a shopper is likely asking that the page doesn’t settle yet.") + '<div class="rx-grid g340">' + doubtCol("Not answered on the page", "bad", "Not answered", miss) + doubtCol("Answered only in part", "mid", "In part", part) + "</div></section>";
     var first = (p0 && p0.label.toLowerCase()) || "a first-time shopper";
     x += '<section class="rx-sec">' + head("What to change first", "Ranked by how much each one likely blocks a sale for " + esc(first) + ".") + changes(R.changes || []) + "</section>";
-    x += findingsSec(R.findings || []) + checksSec(R.checks, (R.findings || []).length);
+    x += findingsSec(R.findings || []) + aiSec(R.ai_checks || [], R.ai_layer) + checksSec(R.checks, (R.findings || []).length);
     if (B.worries && B.worries.length) x += '<section class="rx-sec">' + head("What reviewers ask about") + '<article class="rx-card rx-list">' + B.worries.slice(0, 6).map(function (w) { return '<div class="rx-li"><i class="b-mid"></i><div><b>' + esc(w.worry) + "</b><span>" + w.mentions + " review" + (w.mentions > 1 ? "s" : "") + "</span></div></div>"; }).join("") + "</article></section>";
     return x;
   }
@@ -50,7 +50,7 @@
   var IMP = { High: ["bad", 0, "P0"], Medium: ["mid", 1, "P1"], Lower: ["none", 2, "P2"] }, CHK = { confirmed: "Double-checked", unconfirmed: "Not double-checked", disagreed: "Second check disagreed", single: "" };
   function findingsSec(F) {
     if (!F.length) return "";
-    var groups = {}; F.forEach(function (f) { (groups[f.cause] = groups[f.cause] || []).push(f); });
+    var groups = {}; F.forEach(function (f, i) { f._i = i; (groups[f.cause] = groups[f.cause] || []).push(f); });
     var order = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
     var n = function (imp) { return F.filter(function (f) { return f.impact === imp; }).length; };
     return '<section class="rx-sec">' + head("Everything we found", F.length + " checks this page fails: " + n("High") + " P0 (high impact), " + n("Medium") + " P1 (medium), " + n("Lower") + " P2 (lower). Grouped by what is behind them.") +
@@ -59,10 +59,24 @@
         var cnt = ["High", "Medium", "Lower"].map(function (k) { var m = L.filter(function (f) { return f.impact === k; }).length; return m ? IMP[k][2] + " " + m : ""; }).filter(Boolean).join(" · ");
         return '<details class="rx-card rx-fg"' + (gi === 0 ? " open" : "") + '><summary><b>' + esc(c) + '</b><span class="rx-k">' + L.length + " check" + (L.length > 1 ? "s" : "") + " · " + cnt + '</span><i class="rx-chev" aria-hidden="true"></i></summary>' +
           L.map(function (f) {
-            return '<div class="rx-frow"><span class="rx-pill p-' + IMP[f.impact][0] + '">' + IMP[f.impact][2] + " · " + f.impact + '</span><div class="rx-fm"><b>' + esc(f.name) + (f.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + "</b>" + (f.saw ? '<span class="rx-m">' + esc(f.saw) + "</span>" : "") +
+            var A = f.ai, mis = A && !A.fits, named = A && A.fits && A.title && A.title.toLowerCase() !== String(f.name).toLowerCase() ? A.title : f.name;
+            return '<div class="rx-frow' + (mis ? " rx-misfit" : "") + '" data-fi="' + f._i + '"><span class="rx-pill p-' + IMP[f.impact][0] + '">' + IMP[f.impact][2] + " · " + f.impact + '</span><div class="rx-fm"><b>' + esc(named) + (f.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + (mis ? ' <em class="rx-aitag bad">AI: doesn’t fit this product</em>' : "") + "</b>" + (named !== f.name ? '<span class="rx-lib">Library check: ' + esc(f.name) + "</span>" : "") + (mis && A.reason ? '<span class="rx-m rx-aiwhy">' + esc(A.reason) + "</span>" : "") + (f.saw ? '<span class="rx-m">' + esc(f.saw) + "</span>" : "") +
               ((f.doubts || []).length || CHK[f.checked] ? '<div class="rx-ftags">' + (f.doubts || []).map(function (d) { return "<span>" + esc(d) + "</span>"; }).join("") + (CHK[f.checked] ? '<span class="c-' + f.checked + '">' + CHK[f.checked] + "</span>" : "") + "</div>" : "") + "</div></div>";
           }).join("") + "</details>";
       }).join("") + "</div></section>";
+  }
+  /* 10-15 checks written by AI for this exact product (29 Nov): failed ones first, then could not tell, then passed */
+  function aiSec(L, meta) {
+    if (!L.length) return meta && meta.ok === false && meta.reason !== "off" ? '<section class="rx-sec">' + head("Checks for this product (AI)", "The AI checks could not be written for this run.") + "</section>" : "";
+    var idx = L.map(function (c, i) { c._i = i; return c; }), F = idx.filter(function (c) { return c.verdict === "fail"; }).sort(function (a, b) { return IMP[a.impact][1] - IMP[b.impact][1]; }), O = idx.filter(function (c) { return c.verdict !== "fail"; });
+    var row = function (c) {
+      var lab = c.verdict === "fail" ? '<span class="rx-pill p-' + IMP[c.impact][0] + '">' + IMP[c.impact][2] + " · " + c.impact + "</span>" : '<span class="rx-pill p-' + (c.verdict === "pass" ? "ok" : "none") + '">' + (c.verdict === "pass" ? "Passed" : "Can’t tell") + "</span>";
+      return '<div class="rx-frow" data-ai="' + c._i + '">' + lab + '<div class="rx-fm"><b>' + esc(c.name) + ' <em class="rx-aitag">AI</em></b>' + (c.quote ? '<span class="rx-m">“' + esc(c.quote) + "”</span>" : c.saw ? '<span class="rx-m">' + esc(c.saw) + "</span>" : "") + (c.note ? '<span class="rx-m">' + esc(c.note) + "</span>" : "") +
+        '<div class="rx-ftags">' + (c.doubt ? "<span>" + esc(c.doubt) + "</span>" : "") + (c.cause ? "<span>" + esc(c.cause) + "</span>" : "") + "</div></div></div>";
+    };
+    return '<section class="rx-sec">' + head("Checks for this product (AI)", L.length + " checks written for this exact product by AI, from its page: " + F.length + " failed, " + O.filter(function (c) { return c.verdict === "pass"; }).length + " passed, " + O.filter(function (c) { return c.verdict === "cannot_tell"; }).length + " couldn’t tell. They are new and not in our library yet.") +
+      '<div class="rx-fgroups">' + (F.length ? '<details class="rx-card rx-fg rx-aig" open><summary><b>Failed</b><span class="rx-k">' + F.length + ' check' + (F.length > 1 ? "s" : "") + '</span><i class="rx-chev" aria-hidden="true"></i></summary>' + F.map(row).join("") + "</details>" : "") +
+      (O.length ? '<details class="rx-card rx-fg rx-aig"><summary><b>Passed or couldn’t tell</b><span class="rx-k">' + O.length + ' check' + (O.length > 1 ? "s" : "") + '</span><i class="rx-chev" aria-hidden="true"></i></summary>' + O.map(row).join("") + "</details>" : "") + "</div></section>";
   }
   /* Every other check (100% visibility): could not tell, passed, does not apply, each with its reason */
   function checksSec(C, nFail) {
@@ -82,7 +96,7 @@
   function changes(list) {
     if (!list.length) return '<p class="rx-m">No change was confirmed by the second read, so none is listed.</p>';
     return '<div class="rx-changes">' + list.map(function (c, i) {
-      return '<article class="rx-card rx-chg' + (i >= 5 ? " more" : "") + '"' + (i >= 5 ? " hidden" : "") + '><span class="rx-n">' + (i + 1) + '</span><div class="rx-cm"><h3>' + esc(c.title) + (c.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + (c.checked ? ' <em class="rx-dc">Double-checked</em>' : "") + "</h3>" + (c.change ? '<p class="rx-t">' + esc(c.change) + "</p>" : "") + (c.why ? '<p class="rx-m">' + esc(c.why) + "</p>" : "") + "</div>" +
+      return '<article class="rx-card rx-chg' + (i >= 5 ? " more" : "") + (c.ai && !c.ai.fits ? " rx-misfit" : "") + '" data-ci="' + i + '"' + (i >= 5 ? " hidden" : "") + '><span class="rx-n">' + (i + 1) + '</span><div class="rx-cm"><h3>' + esc(c.title) + (c.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + (c.checked ? ' <em class="rx-dc">Double-checked</em>' : "") + (c.ai && !c.ai.fits ? ' <em class="rx-aitag bad">AI: doesn’t fit this product</em>' : "") + "</h3>" + (c.ai && !c.ai.fits && c.ai.reason ? '<p class="rx-m rx-aiwhy">' + esc(c.ai.reason) + "</p>" : "") + (c.ai && c.ai.fits && c.ai.title ? '<p class="rx-lib">For this product: <b>' + esc(c.ai.title) + "</b></p>" : "") + (c.change ? '<p class="rx-t">' + esc(c.change) + "</p>" : "") + (c.why ? '<p class="rx-m">' + esc(c.why) + "</p>" : "") + "</div>" +
         (c.evidence ? '<div class="rx-ev"><span>On the page now</span><p>' + esc(c.evidence) + "</p></div>" : "") + "</article>";
     }).join("") + "</div>" + (list.length > 5 ? '<button type="button" class="rx-btn ghost sm" data-au-more>Show ' + (list.length - 5) + " more</button>" : "");
   }

@@ -1659,7 +1659,7 @@
     }
     $("[data-t-bar]").textContent = String(bIds.length);
     stage("barriers", "done", bIds.length ? plural(bIds.length, "barrier") + ": " + bIds.slice(0, 3).join(", ") : "No barrier tags on the failed checks");
-    addFeed(bIds.length ? "fail" : "pass", bIds.length ? plural(bIds.length, "buyer barrier") + " triggered" : "No buyer barriers triggered", bIds.slice(0, 4).map(function (b) { return b + (lib.barriers[b] ? " " + tidy(lib.barriers[b].name) : ""); }).join(", "), "");
+    addFeed(bIds.length ? "fail" : "pass", bIds.length ? plural(bIds.length, "buyer barrier") + " triggered" : "No buyer barriers triggered", bIds.slice(0, 4).map(function (b) { return lib.barriers[b] ? tidy(lib.barriers[b].name) : "Buyer doubt"; }).join(", "), ""); /* names only: no barrier codes in what brands see */
 
     /* 6. Search & AI agent (runs while Speed keeps waiting) */
     curAgent = "search";

@@ -437,3 +437,42 @@ body.an-app a, body.an-app button, body.an-app [role="tab"] { -webkit-tap-highli
 }
 /* the preview box's rounded top corner clipped the first letter of the address */
 .ag2 .ag-canvas .bbar, .ag2 .ag-canvas.is-phone .bbar { padding-left: 12px; padding-right: 6px; }
+
+/* ================= scan screen: phone beside everything (29 Nov, "phone bada karo, first fold mein rakho") =================
+   Left: the live phone, sticky, as tall as the screen allows. Right: title, progress, agents, counts, findings.
+   Phones: one column in reading order (title, progress, agents, phone, counts, findings). */
+@media (min-width: 861px) {
+  body.an-app .ag2 { padding-top: 120px; }
+  body.an-app { --ph: clamp(380px, calc(100vh - 345px), 760px); }
+  @supports (height: 100svh) { body.an-app { --ph: clamp(380px, calc(100svh - 345px), 760px); } }
+  /* the phone column is sized from the phone itself, so a long "Now checking" line can never widen it */
+  .ag2 .ag-v2 { grid-template-columns: calc((var(--ph) - 34px) * 0.462 + 130px) minmax(0, 1fr); align-items: start; gap: 24px; }
+  .ag2 .ag-v2:has(.ag-canvas:not(.is-phone)) { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
+  .ag2 .ag-phonecard { min-width: 0; }
+  .ag2 .ag-phonecard { position: sticky; top: 16px; }
+  .ag2 .ag-phonecard .ag-canvas:not(.is-phone) { width: min(460px, 34vw); }
+  .ag2 .ag-right { gap: 16px; }
+  .ag2 .ag-right .ag-top { align-items: flex-end; gap: 16px; }
+  .ag2 .ag-right .ag-top .h2 { font-size: clamp(30px, 2.8vw, 40px); }
+  .ag2 .ag-right .ag-prog { margin-top: -4px; }
+  .ag2 .ag-roster { grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: visible; }
+  .ag2 .ag-a { min-height: 80px; padding: 11px 12px; }
+  .ag2 .ag-tally { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ag2 .ag-tally > div { padding: 14px 16px; }
+  .ag2 .ag-tally b, .ag2 .ag-tally .ags b { font-size: 34px; }
+}
+@media (max-width: 860px) {
+  .ag2 .ag-v2 { display: flex; flex-direction: column; align-items: stretch; gap: 16px; }
+  .ag2 .ag-v2 > *, .ag2 .ag-right > * { min-width: 0; max-width: 100%; }
+  /* on a phone the preview fills the card; the reader scales the page to this width (analyzer.js narrow mode) */
+  .ag2 .ag-canvas, .ag2 .ag-canvas.is-phone { width: 100%; margin: 0; }
+  .ag2 .ag-right { display: contents; }
+  .ag2 .ag-top { order: 1; } .ag2 .ag-prog { order: 2; margin-top: -6px; } .ag2 .ag-team { order: 3; }
+  .ag2 .ag-phonecard { order: 4; } .ag2 .ag-tally { order: 5; } .ag2 .ag-log { order: 6; }
+}
+  /* "Now checking" under the phone: at most two lines, so the card ends above the fold */
+@media (min-width: 861px) {
+  .ag2 .ag-nowcheck { padding: 10px 12px; gap: 10px; }
+  .ag2 .ag-nowcheck b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; line-height: 1.35; }
+  .ag2 .ag-phonecard { gap: 12px; padding: 14px; }
+}

@@ -764,8 +764,26 @@ details[open] > summary .chev::before { transform: rotate(-135deg); top: 7px; }
 .ag-real { position: absolute; top: 0; left: 0; right: 70px; bottom: 0; overflow: hidden; background: #fff; opacity: 0; transition: opacity 0.5s; }
 .ag-real.on { opacity: 1; }
 .ag-frame { border: 0; transform-origin: 0 0; pointer-events: none; display: block; background: #fff; }
+.ag-real.is-phone { border-radius: 14px; box-shadow: 0 0 0 1px rgba(255,255,255,.08); }
+.ag-shot { position: absolute; top: 0; left: 0; width: 100%; height: auto; pointer-events: none; opacity: 0; transition: opacity .5s; will-change: transform; }
+.ag-shot.on { opacity: 1; }
 .ag-page.hide { opacity: 0; transition: opacity 0.4s; }
 .ag-canvas.is-real .ag-view { background: #0D0D11; }
+/* phone first: a real phone (390 x 844 screen in a bezel with a notch), the agents' rail beside it, no window chrome */
+.ag-canvas.is-phone { border: 0; background: transparent; box-shadow: none; overflow: visible; }
+.ag-canvas.is-phone .bbar { height: 34px; justify-content: center; background: transparent; border-bottom: 0; }
+.ag-canvas.is-phone .bbar > i { display: none; }
+.ag-canvas.is-phone .bbar .url { flex: 0 1 auto; max-width: 300px; text-align: center; border-radius: 999px; }
+.ag-canvas.is-phone .ag-view { height: 720px; background: transparent; }
+.ag-real.is-phone { border-radius: 50px; background: #0B0B0E; padding: 11px; overflow: visible; box-shadow: 0 0 0 2px #2B2B34, 0 0 0 4px #141418, 0 40px 90px -30px rgba(139,107,247,0.45); }
+.ag-real.is-phone::after { content: ""; position: absolute; right: -6px; top: 22%; width: 3px; height: 64px; border-radius: 2px; background: #2B2B34; }
+.ag-screen { position: relative; overflow: hidden; border-radius: 40px; background: #fff; }
+.ag-screen::before { content: ""; position: absolute; top: 8px; left: 50%; transform: translateX(-50%); width: 30%; height: 22px; border-radius: 14px; background: #000; z-index: 6; }
+/* store blocks every reader: the bookmark steps on the error card */
+.an-blocked { text-align: left; margin: 18px auto 6px; max-width: 560px; }
+.an-blocked ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; color: var(--fg-2, #c9c9d1); font-size: 14.5px; line-height: 1.5; }
+.an-blocked .btn { margin: 0 4px; vertical-align: middle; }
+.an-blocked .an-capnote { margin-top: 12px; font-size: 13px; opacity: .7; }
 .ag-canvas.is-real .ag-box { background: color-mix(in srgb, var(--c) 14%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); }
 .ag-canvas.is-real .ag-cur svg { filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
 @media (max-width: 900px) { .ag-real { right: 54px; } }
@@ -1263,3 +1281,160 @@ details[open] > summary .chev::before { transform: rotate(-135deg); top: 7px; }
 .wb-fails li { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--wb-s2); border: 1px solid var(--line); font-size: 13.5px; }
 .wb-fails li span { color: var(--muted); font-size: 12.5px; }
 .wb-score .wb-k .up { white-space: nowrap; }
+
+/* ---- scan screen polish (28 Nov 2026) ---- */
+/* stat tiles: label, big number, a small meter */
+.ag-tally div { position: relative; overflow: hidden; display: grid; gap: 6px; justify-items: stretch; text-align: left; align-content: start; padding: 14px 16px 14px; border-radius: 16px; background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01)); }
+.ag-tally .tg-lab { order: -1; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); }
+.ag-tally b { font-size: 30px; line-height: 1; }
+.ag-tally .ags b { font-size: 22px; padding-top: 4px; }
+.ag-tally .mt { display: flex; gap: 3px; height: 5px; border-radius: 99px; background: rgba(255,255,255,0.06); overflow: hidden; }
+.ag-tally .mt em { display: block; height: 100%; width: 0; border-radius: 99px; transition: width 0.6s var(--ease); }
+.ag-tally .bad .mt em { background: var(--red); } .ag-tally .ok .mt em { background: var(--green); }
+.ag-tally .mt.bars { background: none; height: 18px; align-items: flex-end; gap: 4px; }
+.ag-tally .mt.bars em { width: 7px; border-radius: 2px; background: color-mix(in srgb, var(--purple-2) 55%, transparent); }
+.ag-tally .mt.bars em:nth-child(1) { height: 30%; } .ag-tally .mt.bars em:nth-child(2) { height: 48%; } .ag-tally .mt.bars em:nth-child(3) { height: 62%; } .ag-tally .mt.bars em:nth-child(4) { height: 80%; } .ag-tally .mt.bars em:nth-child(5) { height: 100%; background: var(--purple-2); }
+.ag-tally .mt.seg { background: none; gap: 4px; }
+.ag-tally .mt.seg em { flex: 1; width: auto; background: rgba(255,255,255,0.08); }
+.ag-tally .mt.seg em.run { background: color-mix(in srgb, var(--c) 55%, transparent); animation: an-pulse 1.2s infinite; }
+.ag-tally .mt.seg em.on { background: var(--c); }
+/* phone mode: the whole phone fits the first screen (its height follows the window); beside it, the four tiles as one
+   compact row and the agent log filling down to the phone's bottom edge */
+body.an-app { --ph: clamp(400px, calc(100vh - 345px), 700px); }
+.ag-canvas.is-phone .ag-view { height: var(--ph); }
+.ag-canvas.is-phone { width: calc((var(--ph) - 34px) * 0.462 + 96px); }
+.ag-main:has(.ag-canvas.is-phone) { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 12px 16px; align-items: stretch; }
+.ag-main:has(.ag-canvas.is-phone) .ag-canvas { grid-row: 1 / span 2; }
+.ag-main:has(.ag-canvas.is-phone) .ag-tally { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 34px 0 0; align-self: start; }
+.ag-main:has(.ag-canvas.is-phone) .ag-tally div { grid-template-columns: 1fr; gap: 6px; padding: 11px 12px; border-radius: 14px; }
+.ag-main:has(.ag-canvas.is-phone) .ag-tally b { grid-row: auto; font-size: 24px; }
+.ag-main:has(.ag-canvas.is-phone) .ag-tally .ags b { font-size: 18px; padding-top: 3px; }
+.ag-main:has(.ag-canvas.is-phone) .ag-tally .tg-lab, .ag-main:has(.ag-canvas.is-phone) .ag-tally .mt { grid-column: 1; grid-row: auto; }
+.ag-main:has(.ag-canvas.is-phone) .ag-tally .tg-lab { order: -1; font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ag-main:has(.ag-canvas.is-phone) .ag-tally .mt.bars { height: 12px; }
+.ag-main:has(.ag-canvas.is-phone) .ag-log { grid-column: 2; grid-row: 2; margin: 0 0 14px; display: flex; flex-direction: column; min-height: 0; }
+.ag-main:has(.ag-canvas.is-phone) .ag-log ol { flex: 1; height: auto; min-height: 0; }
+.ag-main .ag-log { margin-top: 12px; }
+.ag { padding-top: 92px; }
+.ag-top .h2 { margin-top: 10px; }
+/* before the real page loads, the placeholder sketch is phone-shaped too */
+.ag-canvas.is-phone .ag-page { inset: 6px auto auto 50%; width: calc((var(--ph) - 34px) * 0.462 + 22px); height: calc(var(--ph) - 12px); transform: translateX(calc(-50% - 35px)); border-radius: 44px; border: 10px solid #0B0B0E; box-shadow: 0 0 0 2px #2B2B34; background: #111116; padding: 26px 14px 0; }
+/* parked cursors beside the phone hide until their agent works */
+.ag-canvas.is-phone .ag-cur:not(.on) { opacity: 0; }
+/* agents: status as a pill, an accent edge on the one at work */
+.ag-side { background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.008)), var(--bg-2); padding: 16px 12px; }
+.ag-roster { gap: 4px; }
+.ag-a { padding: 10px 12px; border-radius: 14px; }
+.ag-st { padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.05); font-size: 9.5px; }
+.ag-a.run { box-shadow: inset 3px 0 0 var(--c); }
+.ag-a.run .ag-st { background: color-mix(in srgb, var(--c) 16%, transparent); }
+.ag-a.done .ag-st { background: rgba(76,195,138,0.12); }
+.ag-a.est .ag-st { background: rgba(229,169,61,0.12); }
+/* log: softer rows, the agent as a coloured chip */
+.ag-log { background: linear-gradient(180deg, #0D0D11, #0A0A0D); }
+.ag-log ol { padding: 6px 0; }
+.ag-l { padding: 8px 18px; border-top: 1px solid rgba(255,255,255,0.035); }
+.ag-l:first-child { border-top: 0; }
+.ag-l .who { justify-self: start; max-width: 100%; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--c) 12%, transparent); }
+.ag-l .tx em { color: var(--dim); }
+@media (max-width: 1180px) { .ag-main:has(.ag-canvas.is-phone) .ag-tally { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 860px) { .ag-canvas.is-phone { width: auto; } .ag-main:has(.ag-canvas.is-phone) { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; } .ag-main:has(.ag-canvas.is-phone) .ag-canvas, .ag-main:has(.ag-canvas.is-phone) .ag-log { grid-row: auto; grid-column: auto; } .ag-main:has(.ag-canvas.is-phone) .ag-tally { margin-top: 0; } .ag-main:has(.ag-canvas.is-phone) .ag-log ol { height: 250px; flex: none; } }
+@media (max-width: 900px) { .ag-main:has(.ag-canvas.is-phone) .ag-tally { grid-template-columns: repeat(2, 1fr); } .ag-l .who { grid-column: 2; } }
+.ag-tally .tg-lab { justify-self: start; text-align: left; }
+
+/* phone-sized screens: centred loading sketch, no accent edge on the small agent tiles */
+@media (max-width: 600px) {
+  .ag-canvas.is-phone .ag-page { width: min(300px, 86%); transform: translateX(-50%); }
+  .ag-a.run { box-shadow: none; }
+  .ag-main:has(.ag-canvas.is-phone) .ag-tally { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ag-main:has(.ag-canvas.is-phone) .ag-tally div { grid-template-columns: 1fr; padding: 12px 14px; }
+  .ag-main:has(.ag-canvas.is-phone) .ag-tally b { grid-row: auto; font-size: 26px; }
+  .ag-main:has(.ag-canvas.is-phone) .ag-tally .tg-lab, .ag-main:has(.ag-canvas.is-phone) .ag-tally .mt { grid-column: 1; grid-row: auto; }
+  .ag-main:has(.ag-canvas.is-phone) .ag-tally .tg-lab { order: -1; }
+}
+/* one content width for the header and every analyzer screen (start, quiz, scan, report), so edges line up and wide
+   screens use the space; even side margins on phones */
+body.an-app .wrap { max-width: 1320px; }
+body.an-app .au-wrap { max-width: 1320px; }
+@media (max-width: 600px) { body.an-app .wrap { padding-left: 18px; padding-right: 18px; } }
+
+/* ---- scan screen v2 (28 Nov 2026, from her mockup): agents row on top; phone card | tiles + live findings ---- */
+body.an-app { --ph: clamp(330px, calc(100vh - 500px), 640px); }
+.ag2 { padding-top: 84px; }
+.ag2 .ag-top { align-items: center; }
+.ag2 .ag-top .h2 { font-size: clamp(28px, 3.4vw, 46px); margin-top: 8px; font-weight: 600; letter-spacing: -0.02em; }
+.ag2 .ag-top-r { gap: 8px; }
+.ag-pill { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line-2); background: rgba(255,255,255,0.03); font-family: var(--f-mono); font-size: 13px; color: var(--text); }
+.ag-pill.an-tag { font-family: inherit; font-size: 14px; }
+.ag-team { margin-top: 22px; padding: 16px 18px 18px; border-radius: 20px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.008)); }
+.ag-team-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.ag-team-h b { font-size: 15px; font-weight: 600; }
+.ag2 .ag-roster { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 10px; }
+.ag2 .ag-a { display: grid; grid-template-columns: none; gap: 8px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg-1); box-shadow: none; }
+.ag2 .ag-a-t { display: flex; align-items: center; gap: 8px; justify-content: flex-start; }
+.ag2 .ag-av { width: 22px; height: 22px; }
+.ag2 .ag-av b { width: 22px; height: 22px; font-size: 11px; opacity: .35; }
+.ag2 .ag-nm { font-size: 14px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ag2 .ag-st { padding: 0; background: none !important; font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+.ag-pb { display: block; height: 3px; border-radius: 99px; background: rgba(255,255,255,0.07); overflow: hidden; }
+.ag-pb em { display: block; height: 100%; width: 0; background: var(--c); border-radius: 99px; transition: width .6s var(--ease); }
+.ag2 .ag-a.run { border-color: color-mix(in srgb, var(--c) 45%, transparent); background: color-mix(in srgb, var(--c) 7%, var(--bg-1)); box-shadow: none; }
+.ag2 .ag-a.run .ag-st { color: var(--c); }
+.ag2 .ag-a.done { border-color: rgba(76,195,138,0.35); background: color-mix(in srgb, #4CC38A 6%, var(--bg-1)); }
+.ag2 .ag-a.done .ag-st { color: var(--green); }
+.ag2 .ag-a.done .ag-pb em { background: var(--green); }
+.ag2 .ag-a.run .ag-nm, .ag2 .ag-a.done .ag-nm { color: #fff; }
+.ag2 .ag-a.run .ag-av b, .ag2 .ag-a.done .ag-av b { opacity: 1; }
+.ag2 .ag-a.done .ag-av b { background: var(--green); }
+.ag-nowrow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.ag-nowrow[hidden] { display: none; }
+.ag-nowrow div { display: flex; gap: 10px; align-items: baseline; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,0.02); font-size: 13.5px; min-width: 0; }
+.ag-nowrow b { font-weight: 600; flex: none; }
+.ag-nowrow span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ag-v2 { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; margin-top: 16px; align-items: stretch; }
+.ag-phonecard { padding: 16px 18px 18px; border-radius: 20px; border: 1px solid var(--line); background: var(--bg-1); display: flex; flex-direction: column; gap: 12px; }
+.ag-phonecard .ag-canvas.is-phone { margin: 0 auto; }
+.ag-phonecard .ag-canvas:not(.is-phone) { width: min(620px, 52vw); }
+.ag-nowcheck { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,0.02); }
+.ag-nowcheck[hidden] { display: none; }
+.ag-nowcheck span { display: block; font-size: 12.5px; color: var(--muted); }
+.ag-nowcheck b { display: block; font-size: 14px; font-weight: 500; margin-top: 2px; }
+.ag-nowcheck em { font-style: normal; font-family: var(--f-mono); font-size: 12px; flex: none; }
+.ag-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.ag2 .ag-tally { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.ag2 .ag-tally div { display: grid; gap: 6px; align-content: start; padding: 16px 18px; border-radius: 18px; }
+.ag2 .ag-tally b { font-size: 40px; font-weight: 600; line-height: 1; }
+.ag2 .ag-tally b small { font-size: 20px; color: var(--muted); font-weight: 500; }
+.ag2 .ag-tally > div > small { font-size: 12.5px; color: var(--muted); }
+.ag2 .ag-tally .tg-lab { order: 0; }
+.ag2 .ag-log { flex: 1; display: flex; flex-direction: column; min-height: 0; margin: 0; border-radius: 20px; background: var(--bg-1); }
+.ag2 .ag-log-h { align-items: center; padding: 12px 18px; background: transparent; }
+.ag2 .ag-log-h b { font-size: 15px; font-weight: 600; }
+.ag-filt { display: flex; gap: 4px; padding: 4px; border-radius: 999px; border: 1px solid var(--line); }
+.ag-filt button { padding: 6px 12px; border-radius: 999px; border: 0; background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; }
+.ag-filt button.on { background: rgba(255,255,255,0.1); color: #fff; }
+.ag2 .ag-log ol { flex: 1; height: auto; min-height: 220px; max-height: calc(var(--ph) + 40px); padding: 0; }
+.ag2 .ag-l { grid-template-columns: 48px 60px minmax(0, 1fr) auto; gap: 14px; align-items: start; padding: 14px 18px; border-top: 1px solid var(--line); }
+.ag2 .ag-l .tm { padding-top: 3px; }
+.ag2 .ag-l .bd { justify-self: start; padding: 2px 10px; border-radius: 999px; font-family: var(--f-mono); font-size: 11.5px; border: 1px solid var(--line-2); color: var(--muted); background: rgba(255,255,255,0.03); }
+.ag2 .ag-l.now .bd { color: var(--purple-3, #CBBEFD); border-color: color-mix(in srgb, var(--purple-2) 50%, transparent); background: rgba(139,107,247,0.12); }
+.ag2 .ag-l.fail .bd { color: var(--red); border-color: rgba(239,107,87,0.4); background: rgba(239,107,87,0.1); }
+.ag2 .ag-l.pass .bd { color: var(--green); border-color: rgba(76,195,138,0.4); background: rgba(76,195,138,0.1); }
+.ag2 .ag-l .tx b { font-size: 14.5px; font-weight: 500; color: #fff; }
+.ag2 .ag-l .tx em { font-size: 13px; color: var(--muted); }
+.ag2 .ag-l .who { background: none; padding: 2px 0 0; color: var(--muted); font-size: 12px; }
+.ag2 .ag-log ol[data-filter="fail"] .ag-l:not(.fail), .ag2 .ag-log ol[data-filter="pass"] .ag-l:not(.pass) { display: none; }
+@media (max-width: 1180px) { .ag2 .ag-roster { grid-template-columns: repeat(4, minmax(0, 1fr)); } .ag2 .ag-tally { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 860px) {
+  .ag-v2 { grid-template-columns: minmax(0, 1fr); } .ag-nowrow { grid-template-columns: minmax(0, 1fr); }
+  .ag2 .ag-top { align-items: flex-start; } .ag2 .ag-top-r { flex-wrap: wrap; }
+  .ag2 .ag-l { grid-template-columns: 40px minmax(0, 1fr); } .ag2 .ag-l .bd { grid-column: 2; } .ag2 .ag-l .tx { grid-column: 2; } .ag2 .ag-l .who { grid-column: 2; }
+  .ag2 .ag-log ol { max-height: 420px; }
+}
+@media (max-width: 600px) { .ag2 .ag-roster { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ag2 .ag-tally b { font-size: 30px; } .ag-filt button { padding: 5px 9px; font-size: 12px; } }
+/* phone card hugs the phone (about a third of the row); long "now checking" text wraps inside it */
+.ag-v2 { grid-template-columns: minmax(320px, 33%) minmax(0, 1fr); }
+.ag-phonecard { min-width: 0; }
+.ag-nowcheck > div { min-width: 0; } .ag-nowcheck b { overflow-wrap: anywhere; }
+.ag2 .ag-tally .tg-lab { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 860px) { .ag-v2 { grid-template-columns: minmax(0, 1fr); } }

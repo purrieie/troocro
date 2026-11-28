@@ -117,23 +117,30 @@
   if (form) form.addEventListener("submit", function (e) { e.preventDefault(); begin(urlIn.value); });
   $$("[data-an-sample]").forEach(function (b) { b.addEventListener("click", function () { openSample(); }); });
 
-  function begin(raw) {
+  function begin(raw, cap) {
+    S.capture = cap || null; /* a read sent from the shopper's own browser (bookmarklet) */
     var u = normalizeInput(raw);
     if (!u) { formErr.textContent = "Enter your store's address, like yourstore.com."; urlIn.focus(); return; }
     formErr.textContent = "";
     if (S.offline) { openSample(); return; }
     S.url = u; S.host = hostOf(u); S.detected = null; S.mode = "live";
     S.scanP = api("/scan", { url: u }, { timeout: 45000 }).then(function (r) { S.detected = r; onDetected(r); return r; });
-    S.scanP.catch(function (e) { if (doc.body.getAttribute("data-an-view") === "questions") showError(e); });
+    S.scanP.catch(function (e) { if (!CFG.audit && doc.body.getAttribute("data-an-view") === "questions") showError(e); }); /* audit mode reads the page in a browser: a failed quick fetch is not fatal */
     /* v3: the quiz's category comes from the v3 reader, not the old keyword guess */
-    S.v3cat = null; S.v3checks = null;
-    if (CFG.v3) v3call("/scan", { url: u, suggest: false }, 60000).then(function (d) {
+    S.v3cat = null; S.v3checks = null; S.v3price = null;
+    S.auditReadP = CFG.audit ? v3call("/audit_read", { url: u }, 90000) : null; /* full read starts now; the quiz only needs the quick category */
+    if (CFG.v3) (CFG.audit ? v3call("/audit_peek", { url: u }, 30000) : v3call("/scan", { url: u, suggest: false }, 60000)).then(function (d) {
       if (!d || S.url !== u) return;
       S.v3cat = CATS.indexOf(d.category) >= 0 ? d.category : null; S.v3checks = d.checklist || null;
-      v3Facts();
-      var q = QS[qi];
-      if (q && q.id === "category" && QA.category === undefined && doc.body.getAttribute("data-an-view") === "questions") renderQ(qi, 0);
+      if (!S.v3price && d.product && +d.product.price > 0) S.v3price = { v: +d.product.price, cur: d.product.currency || "INR" };
+      lateCategory();
     });
+    if (S.auditReadP) S.auditReadP.then(function (r) {
+      if (!r || !r.ok || S.url !== u) return;
+      /* the reader's price is the one a shopper sees on the first screen: it replaces the quick guess */
+      if (r.product && +r.product.price > 0) { S.v3price = { v: +r.product.price, cur: r.product.currency || "INR" }; v3Facts(); }
+      if (!S.v3cat && CATS.indexOf(r.category) >= 0) { S.v3cat = r.category; lateCategory(); }
+    }, function () {});
     setupQuestions();
     show("questions");
     setQuery("url=" + encodeURIComponent(u.replace(/^https?:\/\//, "").replace(/\/$/, "")));
@@ -149,12 +156,37 @@
     { id: "visitors", title: "How many people visit this page a month?", sub: "A rough guess is fine. It dates your test plan.", cols: 1, opts: [["5000", "Under 10,000"], ["30000", "10,000 to 50,000"], ["120000", "50,000 to 2 lakh"], ["300000", "Over 2 lakh"], ["", "Not sure"]] },
     { id: "competitors", title: "Who do shoppers compare you with?", sub: "Optional. Add up to two sites and we'll show where they're ahead.", type: "comp" }
   ];
+  /* Page audit (CRO core spec): category, device, traffic source, who buys. Nothing else is asked. */
+  if (CFG.audit) QS = [
+    { id: "category", title: "What do you sell?", sub: "It picks the checks for your category.", cols: 3, opts: CATS.map(function (c) { return [c, c]; }) },
+    { id: "device", title: "Where do most shoppers buy?", sub: "We read the page phone first unless you say otherwise.", cols: 2, opts: [["Phone", "Phone"], ["Desktop", "Desktop"], ["Both", "Both"], ["Not sure", "Not sure"]] },
+    { id: "trafficA", title: "Where do most visitors come from?", sub: "Visitors from paid ads need more convincing, so their doubts rank higher.", cols: 2, opts: [["paid", "Mostly paid ads"], ["search", "Mostly search"], ["social", "Mostly social or influencer"], ["email", "Mostly email or WhatsApp"], ["direct", "Mostly direct"], ["unsure", "Not sure"]] },
+    { id: "buyers", title: "Who mainly buys this?", sub: "Pick up to two, or Not sure. Their doubts decide which changes come first.", cols: 1, multi: 2, opts: [] }
+  ];
+  /* the category arrived after the quiz moved on: fill it in, and swap a fallback buyer list for the right one */
+  function lateCategory() {
+    v3Facts();
+    var q = QS[qi], inQs = doc.body.getAttribute("data-an-view") === "questions";
+    if (q && q.id === "category" && QA.category === undefined && inQs) renderQ(qi, 0);
+    if (q && q.multi && CFG.audit && !QA.catPicked && !QA.buyersTouched && S.v3cat && S.auditPersonasCat !== S.v3cat) { if (!QA.category || QA.category === "Other") QA.category = S.v3cat; S.auditPersonasCat = null; loadPersonas(); if (inQs) renderQ(qi, 0); }
+  }
+  function loadPersonas() {
+    var cat = QA.category || S.v3cat || "Other";
+    if (S.auditPersonasCat === cat) return;
+    S.auditPersonasCat = cat; S.auditPersonas = null; QA.buyers = [];
+    v3call("/audit_personas", { url: S.url, category: cat }, 20000).then(function (d) {
+      if (S.auditPersonasCat !== cat) return;
+      S.auditPersonas = (d && d.personas) || [];
+      var q = QS[qi]; if (q && q.multi && doc.body.getAttribute("data-an-view") === "questions") renderQ(qi, 0);
+    });
+  }
   var QA = {}, qi = 0, advT = 0, liveT = 0;
   var stageEl = $("[data-qz-stage]");
   var ICON_ARROW = '<svg width="14" height="14" aria-hidden="true"><use href="#i-arrow"/></svg>';
 
   function setupQuestions() {
     QA = { competitors: ["", ""], ad: "" }; qi = 0;
+    var pg = $("[data-qz-prog]"); if (pg) pg.innerHTML = QS.map(function () { return "<i></i>"; }).join("");
     var st = $("[data-qz-status]"); st.textContent = "Reading your page"; st.classList.add("live");
     $("[data-qz-url]").textContent = S.host;
     var t0 = $("[data-qz-title]"); t0.textContent = "Opening " + S.host + "…"; t0.classList.remove("desc"); t0.hidden = false;
@@ -177,6 +209,10 @@
       var k = li.querySelector("span"), v = li.querySelector("b"); if (!k || !v) return;
       if (k.textContent === "Category") v.textContent = S.v3cat || "Reading…";
       if (k.textContent === "Checks lined up" && S.v3checks) v.textContent = String(S.v3checks);
+      /* audit mode: the price is the product's own, from the page reader; never the old scan's "typical" guess
+         (stevemadden.in pumps showed "Typical ₹1,52,975") */
+      if (k.textContent === "Prices" && CFG.audit) { k.textContent = "Price"; v.textContent = S.v3price ? money(S.v3price.v, S.v3price.cur) : "Reading…"; }
+      else if (k.textContent === "Price" && CFG.audit && S.v3price) v.textContent = money(S.v3price.v, S.v3price.cur);
     });
   }
   function detectedFor(id) {
@@ -192,6 +228,8 @@
     if (d) return d;
     if (q.id === "goal") return "conversion";
     if (q.id === "traffic") return "mix";
+    if (q.id === "device") return "Phone";
+    if (q.id === "trafficA") return "unsure";
     return undefined;
   }
   function qHtml(q, i) {
@@ -200,6 +238,17 @@
       h += '<div class="qz-comp">' + [0, 1].map(function (k) {
         return '<label class="an-input qz-inp"><span class="pfx">https://</span><span class="sr-only">Competitor ' + (k + 1) + '</span><input type="text" inputmode="url" autocapitalize="none" spellcheck="false" data-qz-comp="' + k + '" placeholder="' + (k ? "another.com" : "competitor.com") + '" value="' + esc(QA.competitors[k] || "") + '"></label>';
       }).join("") + '</div><label class="an-input qz-inp qz-ad"><span class="sr-only">One of your ad headlines</span><input type="text" maxlength="160" data-qz-ad placeholder="Optional: paste one ad headline and we\'ll check the page matches it" value="' + esc(QA.ad || "") + '"></label><div class="an-err" data-qz-err role="alert"></div><div class="qz-go"><button class="btn btn-primary qz-start" type="button" data-qz-start>Start my analysis ' + ICON_ARROW + '</button><span class="qz-enter">or press <kbd>Enter</kbd></span></div>';
+      return h;
+    }
+    if (q.multi) {
+      var L = S.auditPersonas, sel = QA.buyers || [];
+      if (!L) h += '<div class="qz-det">' + ICON_SPARK + "<span>Loading the buyer types for this category…</span></div>";
+      var mo = (L || []).map(function (p) { return [p.id, p.label, p.worry]; }).concat([["unsure", "Not sure", ""]]);
+      h += '<div class="qz-opts c1" role="group" aria-labelledby="qz-title">' + mo.map(function (o, k) {
+        var on = o[0] === "unsure" ? (!sel.length && !!QA.buyersTouched) : sel.indexOf(o[0]) >= 0;
+        return '<button type="button" class="qz-opt' + (on ? " on" : "") + '" role="checkbox" aria-checked="' + on + '" data-v="' + esc(o[0]) + '"><kbd>' + String.fromCharCode(65 + k) + "</kbd><span>" + esc(o[1]) + (o[2] ? '<small style="display:block;opacity:.7;font-size:12.5px;margin-top:3px">' + esc(o[2]) + "</small>" : "") + '</span><i class="tick">' + ICON_CHECK + "</i></button>";
+      }).join("") + "</div>";
+      h += '<div class="qz-go"><button class="btn btn-light btn-sm qz-ok" type="button" data-qz-ok>OK ' + ICON_CHECK + '</button><span class="qz-enter">press <kbd>Enter</kbd></span></div>';
       return h;
     }
     var det = detectedFor(q.id), cur = currentVal(q);
@@ -216,13 +265,15 @@
   }
   function renderQ(i, dir) {
     var q = QS[i];
+    if (q.multi && CFG.audit) loadPersonas();
     var old = stageEl.firstElementChild;
     var el = doc.createElement("div");
     el.className = "qz-q" + (dir ? (dir > 0 ? " from-b" : " from-t") : "");
     el.innerHTML = qHtml(q, i);
-    if (old) {
-      if (dir) { old.classList.add(dir > 0 ? "to-t" : "to-b"); setTimeout(function () { if (old.parentNode) old.parentNode.removeChild(old); }, reduced ? 0 : 340); }
-      else old.parentNode.removeChild(old);
+    if (!dir) stageEl.innerHTML = ""; /* a re-render replaces everything, including a question still sliding out */
+    else if (old) {
+      [].slice.call(stageEl.children).forEach(function (c) { if (c !== old) c.parentNode.removeChild(c); });
+      old.classList.add(dir > 0 ? "to-t" : "to-b"); setTimeout(function () { if (old.parentNode) old.parentNode.removeChild(old); }, reduced ? 0 : 340);
     }
     stageEl.appendChild(el);
     if (dir) requestAnimationFrame(function () { requestAnimationFrame(function () { el.classList.remove("from-b", "from-t"); }); });
@@ -236,16 +287,37 @@
   }
   function choose(v) {
     var q = QS[qi]; if (!q || q.type === "comp") return;
+    if (q.multi) {
+      var sl = (QA.buyers || []).slice(); QA.buyersTouched = true;
+      if (v === "unsure") sl = []; else { var ix = sl.indexOf(v); if (ix >= 0) sl.splice(ix, 1); else { sl.push(v); if (sl.length > q.multi) sl.shift(); } }
+      QA.buyers = sl; renderQ(qi, 0); return;
+    }
     QA[q.id] = v;
     if (q.id === "category") QA.catPicked = true; // a tap is the shopper's own choice; OK on the default is not
+    /* a category other than the detected one changes every check and buyer type: show it and wait for OK, no auto-advance
+       (a stray letter key once audited a Mamaearth moisturiser as jewellery) */
+    var detC = q.id === "category" ? detectedFor("category") : null, cur0 = stageEl.lastElementChild, warn = cur0 && cur0.querySelector("[data-qz-swap]");
+    if (warn) warn.remove();
+    if (detC && v !== detC) {
+      warn = doc.createElement("div"); warn.className = "qz-det"; warn.setAttribute("data-qz-swap", "");
+      warn.innerHTML = ICON_SPARK + "<span>We read this page as <b>" + esc(detC) + "</b>. Switching to <b>" + esc(v) + "</b> changes the checks and buyer types. Press OK to confirm.</span>";
+      var go0 = cur0.querySelector(".qz-go"); if (go0) go0.parentNode.insertBefore(warn, go0);
+    }
     $$(".qz-opt", stageEl.lastElementChild).forEach(function (b) { var on = b.getAttribute("data-v") === String(v); b.classList.toggle("on", on); b.setAttribute("aria-checked", on); if (on) { b.classList.remove("pop"); void b.offsetWidth; b.classList.add("pop"); } });
     clearTimeout(advT);
+    if (detC && v !== detC) return;
     advT = setTimeout(nextQ, reduced ? 60 : 420);
   }
   function nextQ() {
     clearTimeout(advT);
     var q = QS[qi];
     if (q && q.type !== "comp" && QA[q.id] === undefined) { var c = currentVal(q); if (c !== undefined) QA[q.id] = c; }
+    /* audit mode: the category picks the checks and the buyer types, so it cannot be skipped */
+    if (q && q.id === "category" && CFG.audit && !QA.category) {
+      var cur = stageEl.lastElementChild, hint = cur && cur.querySelector("[data-qz-need]");
+      if (cur && !hint) { hint = doc.createElement("div"); hint.className = "qz-det"; hint.setAttribute("data-qz-need", ""); hint.innerHTML = ICON_SPARK + "<span>Pick what you sell, so we use the right checks and buyer types.</span>"; var go = cur.querySelector(".qz-opts"); if (go) go.parentNode.insertBefore(hint, go); }
+      return;
+    }
     if (qi < QS.length - 1) { qi++; renderQ(qi, 1); } else finishQs(false);
   }
   function prevQ() { clearTimeout(advT); if (qi > 0) { qi--; renderQ(qi, -1); } }
@@ -269,7 +341,10 @@
       catYou: !skip && (CFG.v3 ? !!QA.catPicked : !!QA.category),
       traffic: skip ? "" : (QA.traffic || ""),
       ad: skip ? "" : String(QA.ad || "").replace(/\s+/g, " ").trim().slice(0, 160),
-      competitors: comps.slice(0, 2)
+      competitors: comps.slice(0, 2),
+      device: skip ? "Phone" : (QA.device || "Phone"),
+      trafficA: skip || !QA.trafficA || QA.trafficA === "unsure" ? "" : QA.trafficA,
+      personas: skip ? [] : (QA.buyers || []).slice(0, 2)
     };
     if (S.inputs.category === "Other") S.inputs.category = "";
     runScan();
@@ -302,8 +377,11 @@
       return;
     }
     if (e.key.length === 1) {
+      /* letter shortcuts only for a single deliberate key, never inside fast typing (two keys within 0.4 s) */
+      var now = Date.now(), burst = now - (S.lastKeyT || 0) < 400; S.lastKeyT = now;
+      if (burst) { clearTimeout(S.keyT); return; }
       var k = e.key.toUpperCase().charCodeAt(0) - 65;
-      if (k >= 0 && k < q.opts.length) { e.preventDefault(); choose(q.opts[k][0]); }
+      if (k >= 0 && k < q.opts.length) { e.preventDefault(); var val = q.opts[k][0]; clearTimeout(S.keyT); S.keyT = setTimeout(function () { if (Date.now() - S.lastKeyT >= 380) choose(val); }, 400); }
     }
   });
   function onDetected(r) {
@@ -318,6 +396,7 @@
     var conv = r.conversion || {};
     var facts = [["Page", PAGE_TYPE[p.pageType] || "Page"], ["Platform", p.platform || "Not detected"], ["Category", p.category && p.category !== "Other" ? p.category : "Not sure yet"], ["Prices", p.aov ? "Typical " + money(p.aov, p.currency) : p.prices ? plural(p.prices, "price") + " found" : "None found"], ["Checks lined up", conv.applicable ? String(conv.applicable) : "Limited: page loads with JavaScript"]];
     $("[data-qz-facts]").innerHTML = facts.map(function (f, k) { return '<li style="animation-delay:' + (k * 90) + 'ms"><span>' + esc(f[0]) + "</span><b>" + esc(f[1]) + "</b></li>"; }).join("");
+    if (CFG.v3) v3Facts();
     var shot = $("[data-qz-shot]"), og = String(p.ogImage || "");
     shot.innerHTML = '<div class="wire on"><span class="wh">' + esc((p.heroHeadline || p.title || "").slice(0, 80)) + '</span><i class="w2"></i><i class="w3"></i><span class="wcta">' + esc(p.primaryCta || "") + "</span></div>";
     if (/^https:\/\//i.test(og)) { var img = new Image(); img.alt = ""; img.onload = function () { shot.insertBefore(img, shot.firstChild); shot.classList.add("has-img"); }; img.src = og; }
@@ -364,13 +443,14 @@
     var cv = $(".ag-canvas"); if (cv) cv.classList.remove("is-real");
     Object.keys(thinkT).forEach(function (k) { clearInterval(thinkT[k]); }); thinkT = {};
     $("[data-ag-roster]").innerHTML = AGENTS.map(function (a) {
-      return '<div class="ag-a" data-ag="' + a.id + '" style="--c:' + a.c + '"><span class="ag-av"><i></i><b>' + esc(a.name.charAt(0)) + '</b></span><div class="ag-a-b"><div class="ag-a-t"><b>' + esc(a.name) + '</b><span class="ag-st">Queued</span></div><div class="ag-a-r">' + esc(a.role) + '</div><div class="ag-a-s" data-ag-s></div></div></div>';
+      return '<div class="ag-a" data-ag="' + a.id + '" style="--c:' + a.c + '" title="' + esc(a.role) + '"><div class="ag-a-t"><span class="ag-av"><b>' + esc(a.name.charAt(0)) + '</b></span><b class="ag-nm">' + esc(a.name) + '</b></div><span class="ag-st">Queued</span><i class="ag-pb"><em data-ag-pb></em></i><div class="ag-a-s" data-ag-s hidden></div></div>';
     }).join("");
     var fx = $("[data-ag-fx]");
     fx.innerHTML = AGENTS.map(function (a) {
       return '<div class="ag-cur" data-cur="' + a.id + '" style="--c:' + a.c + '"><svg viewBox="0 0 16 16" width="16" height="16"><path d="M2 1.5 14 7.2 8.6 8.6 6.6 14Z" fill="var(--c)" stroke="#0A0A0C" stroke-width="1.2" stroke-linejoin="round"/></svg><span>' + esc(a.name) + "</span></div>";
     }).join("");
-    $("[data-ag-log]").innerHTML = "";
+    $("[data-ag-log]").innerHTML = ""; agLine = {}; feedC = { all: 0, fail: 0, pass: 0 }; updFilt(); updNow();
+    var nc = $("[data-ag-nowcheck]"); if (nc) nc.hidden = true;
     $("[data-ag-page]").innerHTML = '<div class="pg-loading"><i></i><i></i><i></i></div>';
     $("[data-ag-url]").textContent = "Opening " + S.host + "…";
     updTally(); updAgCount();
@@ -378,12 +458,18 @@
   function updTally() {
     $("[data-t-fix]").textContent = tally.fix;
     $("[data-t-pass]").textContent = tally.pass;
+    var tot = tally.fix + tally.pass, mf = $("[data-m-fix]"), mp = $("[data-m-pass]");
+    if (mf) mf.style.width = (tot ? Math.round(100 * tally.fix / tot) : 0) + "%";
+    if (mp) mp.style.width = (tot ? Math.round(100 * tally.pass / tot) : 0) + "%";
   }
   function updAgCount() {
     var done = AGENTS.filter(function (a) { return agState[a.id] === "done"; }).length;
     var run = AGENTS.filter(function (a) { return agState[a.id] === "run"; }).map(function (a) { return a.name; });
-    $("[data-t-ag]").textContent = done + " of " + AGENTS.length;
-    $("[data-ag-active]").textContent = done === AGENTS.length ? "All done" : run.length ? run.length + " working" : "Starting";
+    $("[data-t-ag]").textContent = done;
+    var q = AGENTS.length - done - run.length, sub = $("[data-t-ag-sub]"); if (sub) sub.textContent = done === AGENTS.length ? "All done" : run.length ? run.length + " working now" : "Starting";
+    var bs = $("[data-t-bar-sub]"); if (bs) bs.textContent = agState.barrier === "done" ? "Tagged from your page" : agState.barrier === "run" ? "Tagging what stops buyers" : "Barriers agent queued";
+    var sg = $("[data-m-ag]"); if (sg) sg.innerHTML = AGENTS.map(function (a, k) { return '<em class="' + (agState[a.id] === "done" ? "on" : agState[a.id] === "run" ? "run" : "") + '" style="--c:' + a.c + '"></em>'; }).join("");
+    $("[data-ag-active]").textContent = done === AGENTS.length ? "All done" : done + " done, " + run.length + " working, " + q + " queued";
   }
   function typeInto(el, text) {
     if (!el) return;
@@ -400,12 +486,22 @@
       row.classList.add(state === "est" ? "done" : state);
       if (state === "est") { row.classList.add("est"); agState[id] = "done"; }
       $(".ag-st", row).textContent = state === "run" ? "Working" : state === "est" ? "Estimated" : state === "done" ? "Done" : "Queued";
+      if (state === "done" || state === "est") { var pb = $("[data-ag-pb]", row); if (pb) pb.style.width = "100%"; }
       var cur = $('[data-cur="' + id + '"]');
       if (cur) cur.classList.toggle("on", state === "run");
       if (state !== "run") { clearInterval(thinkT[id]); park(id); }
       updAgCount();
     }
-    if (text != null) typeInto($("[data-ag-s]", row), text);
+    if (text != null) { typeInto($("[data-ag-s]", row), text); agLine[id] = text; }
+    updNow();
+  }
+  /* the strip under the agent cards: what each working agent is doing right now */
+  var agLine = {};
+  function updNow() {
+    var el = $("[data-ag-now]"); if (!el) return;
+    var run = AGENTS.filter(function (a) { return agState[a.id] === "run" && agLine[a.id]; }).slice(0, 3);
+    el.innerHTML = run.map(function (a) { return '<div style="--c:' + a.c + '"><b>' + esc(a.name) + "</b><span>" + esc(agLine[a.id]) + "</span></div>"; }).join("");
+    el.hidden = !run.length;
   }
   function think(id, lines) {
     clearInterval(thinkT[id]); var k = 0;
@@ -421,6 +517,11 @@
     setAgent(st.agent, aState, detail != null ? detail : null);
     var done = 0; STAGES.forEach(function (s) { var v = stState[s.id]; done += v === "done" || v === "est" ? 1 : v === "run" ? 0.4 : 0; });
     var pct = Math.round(done / STAGES.length * 100);
+    AGENTS.forEach(function (ag) {
+      var ms = STAGES.filter(function (s) { return s.agent === ag.id; }); if (!ms.length) return;
+      var d = 0; ms.forEach(function (s) { var v = stState[s.id]; d += v === "done" || v === "est" ? 1 : v === "run" ? 0.45 : 0; });
+      var pb = $('[data-ag="' + ag.id + '"] [data-ag-pb]'); if (pb) pb.style.width = Math.round(100 * d / ms.length) + "%";
+    });
     $("[data-s-bar]").style.width = pct + "%";
     $("[data-s-barwrap]").setAttribute("aria-valuenow", pct);
     $("[data-s-pct]").textContent = pct + "% done";
@@ -440,21 +541,29 @@
   function addFeed(kind, title, text, chips, agentId) {
     var a = AG[agentId || curAgent] || AGENTS[0];
     var list = $("[data-ag-log]");
-    var stick = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-    var li = doc.createElement("li");
-    li.className = "ag-l " + kind;
+    var prev = $(".ag-l.now", list); if (prev) { prev.classList.remove("now"); $(".bd", prev).textContent = "Info"; }
+    var li = doc.createElement("li"), isNow = kind === "act" && S.running;
+    li.className = "ag-l " + kind + (isNow ? " now" : "");
     li.style.setProperty("--c", a.c);
-    li.innerHTML = '<span class="tm">' + fmtT() + '</span><span class="who">' + esc(a.name) + '</span><span class="ic">' + (kind === "pass" ? ICON_CHECK : kind === "fail" ? "!" : kind === "info" ? ICON_SPARK : "›") + '</span><span class="tx"><b>' + esc(title) + "</b>" + (text ? '<em>' + esc(text) + "</em>" : "") + (chips ? '<span class="chips">' + chips + "</span>" : "") + "</span>";
-    list.appendChild(li);
-    feedN++;
+    li.innerHTML = '<span class="tm">' + fmtT() + '</span><span class="bd">' + (kind === "pass" ? "Pass" : kind === "fail" ? "Fix" : isNow ? "Now" : "Info") + '</span><span class="tx"><b>' + esc(title) + "</b>" + (text ? '<em>' + esc(text) + "</em>" : "") + (chips ? '<span class="chips">' + chips + "</span>" : "") + '</span><span class="who">' + esc(a.name) + "</span>";
+    list.insertBefore(li, list.firstChild);
+    feedN++; feedC.all++; if (kind === "fail") feedC.fail++; if (kind === "pass") feedC.pass++; updFilt();
     $("[data-s-count]").textContent = plural(feedN, "line");
-    while (list.children.length > 80) list.removeChild(list.firstChild);
-    if (stick) list.scrollTop = list.scrollHeight;
+    while (list.children.length > 80) list.removeChild(list.lastChild);
+    if (isNow) { var nc = $("[data-ag-nowcheck]"); if (nc) { nc.hidden = false; $("[data-ag-nc-t]", nc).textContent = title + (text ? ": " + text : ""); var w = $("[data-ag-nc-a]", nc); w.textContent = a.name; w.style.color = a.c; } }
   }
+  var feedC = { all: 0, fail: 0, pass: 0 };
+  function updFilt() { ["all", "fail", "pass"].forEach(function (k) { var e = $("[data-fc-" + k + "]"); if (e) e.textContent = feedC[k]; }); }
+  doc.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("[data-ag-filt] [data-f]"); if (!b) return;
+    var f = b.getAttribute("data-f"), list = $("[data-ag-log]");
+    $$("[data-ag-filt] [data-f]").forEach(function (x) { x.classList.toggle("on", x === b); });
+    if (list) list.setAttribute("data-filter", f);
+  });
   function barrierChips(ids, lib, max) {
     return (ids || []).slice(0, max || 3).map(function (b) {
       var x = lib.barriers && lib.barriers[b];
-      return '<span class="chip b" title="' + esc(x ? tidy(x.description) : "") + '">' + esc(b + (x ? " " + tidy(x.name) : "")) + "</span>";
+      return '<span class="chip b" title="' + esc(x ? tidy(x.description) : "") + '">' + esc(x ? tidy(x.name) : "Buyer doubt") + "</span>"; /* no barrier codes in what shoppers see */
     }).join("");
   }
 
@@ -806,16 +915,35 @@
   win.TrooLive = { read: liveRead };
   function mountReal(v, p) {
     var view = $(".ag-view"), pg = $("[data-ag-page]"); if (!view || !pg) return;
-    var W = pg.clientWidth || (view.clientWidth - 70), H = view.clientHeight;
-    var vw = W < 560 ? 390 : 1280, scale = W / vw;
+    view.style.height = ""; /* a height set for a phone-sized screen on an earlier scan */
+    var W = (S.inputs && S.inputs.device === "Desktop" ? pg.clientWidth : 0) || (view.clientWidth - 70), H = view.clientHeight; /* phone mode: the placeholder is phone-sized, so measure the view */
+    /* phone first: the page is shown on a 390px phone unless the shopper said most buyers use desktop */
+    var desk = !!(S.inputs && S.inputs.device === "Desktop"), vw = desk ? 1280 : 390, scale, ox = 0, oy = 0, sw = 0, sh = 0, BZ = 11, H2 = H;
+    if (desk) scale = W / vw;
+    else {
+      /* a real phone: a 390 x 844 screen scaled to fit the height, in a bezel, centred; the agents' rail stays outside */
+      /* on a phone-sized screen there is no room for the agents' rail: the phone takes the full width and the box
+         shrinks to the phone's height (no empty band above and below) */
+      var narrow = win.innerWidth < 600; /* a phone-sized window; on wider screens the canvas is phone-width on purpose */
+      if (narrow) { W = view.clientWidth; scale = Math.min((W - 2 * BZ - 8) / vw, 1); H = Math.round(844 * scale) + 2 * BZ + 12; view.style.height = H + "px"; }
+      else scale = Math.min((H - 2 * BZ - 12) / 844, (W - 2 * BZ - 8) / vw, 1);
+      sw = Math.round(vw * scale); sh = Math.round(844 * scale); H2 = sh;
+      ox = Math.max(0, Math.round((W - sw - 2 * BZ) / 2)) + BZ; oy = Math.max(0, Math.round((H - sh - 2 * BZ) / 2)) + BZ;
+    }
     var fr = doc.createElement("iframe");
     fr.setAttribute("sandbox", "allow-same-origin");
     fr.setAttribute("title", "Your page, as the agents see it");
     fr.setAttribute("tabindex", "-1");
     fr.className = "ag-frame";
-    fr.style.width = vw + "px"; fr.style.height = Math.ceil(H / scale) + "px"; fr.style.transform = "scale(" + scale + ")";
+    fr.style.width = vw + "px"; fr.style.height = Math.ceil(H2 / scale) + "px"; fr.style.transform = "scale(" + scale + ")";
     fr.srcdoc = v.html;
-    var holder = doc.createElement("div"); holder.className = "ag-real"; holder.appendChild(fr);
+    var holder = doc.createElement("div"); holder.className = "ag-real" + (desk ? "" : " is-phone");
+    if (desk) holder.appendChild(fr);
+    else {
+      var scr = doc.createElement("div"); scr.className = "ag-screen"; scr.style.width = sw + "px"; scr.style.height = sh + "px"; scr.appendChild(fr); holder.appendChild(scr);
+      holder.style.left = (ox - BZ) + "px"; holder.style.top = (oy - BZ) + "px"; holder.style.right = "auto"; holder.style.bottom = "auto";
+      holder.style.width = (sw + 2 * BZ) + "px"; holder.style.height = (sh + 2 * BZ) + "px";
+    }
     view.insertBefore(holder, pg);
     var done = false;
     function ready() {
@@ -834,7 +962,8 @@
         var text = (d.body.innerText || "").replace(/\s+/g, " ").length;
         var els = findRegions(d, w);
         if (text < 250 || (!els.title && !els.cta)) { holder.remove(); viewDone(false); return; }
-        RV = { frame: fr, doc: d, win: w, scale: scale, els: els, H: H, pins: [] };
+        RV = { frame: fr, doc: d, win: w, scale: scale, els: els, H: H2, pins: [], ox: ox, oy: oy, phone: !desk };
+        if (!desk) realShot(holder);
         holder.classList.add("on"); pg.classList.add("hide");
         $(".ag-canvas").classList.add("is-real");
         addFeed("act", "Loaded your live page", "Drawn without its scripts, so nothing on your store runs or changes", "", "reader");
@@ -843,6 +972,23 @@
     }
     fr.addEventListener("load", ready);
     setTimeout(ready, 6000);
+  }
+  /* The copy above is drawn without the store's scripts, so anything a script adds (review stars and counts, offer
+     badges) is missing. When the page reader's real phone render arrives (a browser that ran the scripts and waited
+     for the page to settle), it is laid over the copy and scrolls with it; the copy stays underneath for positions. */
+  function realShot(holder) {
+    Promise.resolve(S.auditReadP).then(function (rd) {
+      var src = rd && rd.ok && rd.shot;
+      if (!RV || !S.running || typeof src !== "string" || !/^data:image\//.test(src)) return;
+      var im = new Image(); im.alt = ""; im.className = "ag-shot";
+      im.onload = function () {
+        if (!RV || !holder.isConnected) return;
+        (holder.querySelector(".ag-screen") || holder).appendChild(im); RV.shot = im; placePins();
+        requestAnimationFrame(function () { im.classList.add("on"); });
+        addFeed("act", "Swapped in the real phone render", "Read in a browser that ran your page's scripts, so review stars and offers show as shoppers see them", "", "reader");
+      };
+      im.src = src;
+    }, function () {});
   }
   function findRegions(d, w) {
     var ATC = /add to (cart|bag|basket)|buy (it )?now|add to order|shop now|order now/i;
@@ -880,7 +1026,13 @@
     if (!RV || !RV.els[name]) return null;
     var b = RV.els[name].getBoundingClientRect(), s = RV.scale, fx = $("[data-ag-fx]");
     var W = fx.clientWidth, H = fx.clientHeight;
-    var x = b.left * s, y = b.top * s, w = Math.min(b.width * s, W - 74 - Math.max(0, x)), h = Math.min(b.height * s, H * 0.8);
+    var x = b.left * s + (RV.ox || 0), y = b.top * s + (RV.oy || 0), w = Math.min(b.width * s, W - 74 - Math.max(0, x)), h = Math.min(b.height * s, H * 0.8);
+    if (RV.phone) {
+      /* keep highlights on the phone's screen: clip to it, and send anything scrolled off it out of view */
+      var top = RV.oy, bot = RV.oy + RV.H; w = Math.min(b.width * s, RV.ox + RV.H * 390 / 844 - x);
+      if (y + h < top + 4 || y > bot - 4) return { x: x, y: -999, w: Math.max(20, w), h: 14, W: W, H: H };
+      if (y < top) { h -= top - y; y = top; } h = Math.min(h, bot - y);
+    }
     return { x: Math.max(0, x), y: y, w: Math.max(20, w), h: Math.max(14, h), W: W, H: H };
   }
   /* ---------- camera: one smooth, eased scroll at a time; the agent's cursor glides in step with it ---------- */
@@ -917,6 +1069,7 @@
   }
   function placePins() {
     if (!RV) return;
+    if (RV.shot) RV.shot.style.transform = "translateY(" + (-RV.win.scrollY * RV.scale) + "px)";
     RV.pins.forEach(function (pp) {
       var r = realRect(pp.region); if (!r) return;
       var slot = { bad: 0, warn: 1, test: 2 }[pp.kind] || 0;
@@ -1128,9 +1281,10 @@
   /* v3: one call path to the engine-faithful API (TrooCRO engine verbatim, Barrier Library score, quote check).
      scan (category + competitors) -> grade + PageSpeed for this page and each competitor, in parallel -> report */
   function v3call(path, body, ms) {
-    var B = String(CFG.v3 || "").replace(/\/+$/, "");
+    var B = String((/^\/audit_/.test(path) && CFG.auditApi) || CFG.v3 || "").replace(/\/+$/, "");
     if (!B || !win.AbortController) return Promise.resolve(null);
     var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, ms || 90000);
+    if (S.capture && /^\/audit_/.test(path)) body = Object.assign({ capture: S.capture }, body);
     return fetch(B + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal })
       .then(function (x) { return x.json(); })
       .then(function (d) { clearTimeout(t); if (d && d.ok !== false) return d; S.v3Err = (d && d.reason) || S.v3Err || ""; return null; })
@@ -1153,8 +1307,25 @@
       }).then(function (d) { return d && d.report ? d.report : null; });
     });
   }
+  /* Page audit: read (started at the quiz) -> speed, signal grading and customer layer in parallel -> report
+     (engine, second read, changes written for the buyer). No partial result: any failed step fails the audit. */
+  function startAudit(r) {
+    var I = S.inputs || {};
+    S.auditP = Promise.resolve(S.auditReadP || v3call("/audit_read", { url: S.url }, 90000)).then(function (rd) {
+      if (!rd) return { failed: S.v3Err || "The page could not be read." };
+      var url = rd.url || S.url, cat = I.category || rd.category || "Other";
+      if (S.running) addFeed("act", "Opened the page for the audit", rd.reader === "browser" ? "Every collapsed section opened" + (rd.postcode ? ", delivery checked for " + rd.postcode : "") : "Read the page as it loads", "", "barrier");
+      return Promise.all([v3call("/audit_grade", { url: url, category: cat }, 175000), v3call("/audit_customer", { url: url, category: cat }, 150000), v3call("/audit_speed", { url: url }, 150000)]).then(function (x) {
+        if (!x[0] || !x[1]) return { failed: S.v3Err || "Grading did not finish." };
+        if (S.running) addFeed("act", "Checked the page for " + cat, plural(x[0].counts.pass + x[0].counts.fail, "check") + " judged from what the page shows", "", "barrier");
+        if (S.running) addFeed("act", "Second read on the biggest problems", "Each one is re-checked on desktop and in the store data before it is listed", "", "plan");
+        return v3call("/audit_report", { url: url, category: cat, device: I.device, traffic: I.trafficA, personas: I.personas }, 175000).then(function (d) { return d && d.report ? d.report : { failed: S.v3Err || "The report did not finish." }; });
+      });
+    });
+  }
   function growthAfterScan(r) {
     var gx = S.gx; if (!gx || !win.TrooGrowth) return;
+    if (CFG.audit) { startAudit(r); return; }
     if (CFG.v3) { startV3(r); return; }
     var p = r.page || {}, mk = win.TrooGrowth.marketOf(r);
     var catP = gx.textP.then(function (t) { return win.TrooGrowth.catOf({ page: p, inputs: S.inputs }, { text: t || {} }).cat; });
@@ -1267,9 +1438,29 @@
     }));
   }
 
+  /* the old scan's result shape, built from the audit read, for stores that block the quick read */
+  function auditOnlyScan(rd) {
+    var pr = rd.product || {};
+    return { url: rd.url, lite: null, conversion: {}, stack: { tools: [] }, checks: [], library: { signals: {}, barriers: {}, rootCauses: {} },
+      page: { url: rd.url, title: pr.title || "", category: rd.category || "", pageType: "PDP", platform: "", currency: pr.currency || "INR", aov: +pr.price || 0, prices: pr.price ? 1 : 0, description: String(pr.description || "").slice(0, 400), primaryCta: "" } };
+  }
+  /* a store that turns readers away (403, bot check) is not a wrong address: say so, and offer the bookmark */
+  function blockedError(e, rd) {
+    var m = String((e && e.message) || "") + " " + String((rd && rd.reason) || "");
+    if (!S.capture && /\b(401|403|429)\b|blocked|bot check|access denied|forbidden|captcha/i.test(m)) return { blocked: true, message: m };
+    return (rd && rd.reason && !(e && e.message)) ? { message: rd.reason } : e;
+  }
   function showError(e) {
     S.running = false;
     clearInterval(tickT);
+    var bl = $("[data-err-blocked]"); if (bl) bl.hidden = !(e && e.blocked);
+    var et = $("#an-err-title"); if (et) et.textContent = e && e.blocked ? "This store turns readers away." : "We couldn't finish this one.";
+    var rt = $("[data-err-retry]"); if (rt) rt.hidden = !!(e && e.blocked);
+    if (e && e.blocked) {
+      $("[data-err-msg]").textContent = S.host + " blocks automated readers, ours included, so we can't open it from our side. You can still audit it from your own browser, where you're a real shopper: it takes one click on the store's page.";
+      var op = $("[data-err-open]"); if (op) op.href = S.url;
+      show("error"); return;
+    }
     if (e && e.network && !S.offline) {
       $("[data-err-msg]").textContent = "We couldn't reach the TrooCRO scanner from this page. Check your connection, or open a sample report instead.";
     } else {
@@ -1284,6 +1475,7 @@
   async function runScan() {
     if (S.running) return;
     S.running = true; S.psi = null; S.comps = []; S.report = null; S.saved = false; S.saveState = ""; feedN = 0;
+    var cv0 = $("[data-ag-canvas]"); if (cv0) cv0.classList.toggle("is-phone", !(S.inputs && S.inputs.device === "Desktop"));
     show("scan");
     S.viewP = fetchView(S.url);
     S.liveP = liveRead(S.url);
@@ -1302,7 +1494,7 @@
       if (L && L.ok) addFeed("act", "Ran your page's own scripts in a sealed copy", "Read what the store draws with JavaScript" + (L.rv && L.rv.count ? ": " + L.rv.count.toLocaleString("en-IN") + " reviews" + (L.rv.rating ? " at " + L.rv.rating + "★" : "") : ""), "", "reader");
       else addFeed("info", "Your page's scripts didn't run here", "Anything it draws with JavaScript, like a reviews widget, is marked \u201ccouldn't load\u201d and left out of the score", "", "reader");
     });
-    $("[data-s-done]").hidden = true;
+    $("[data-s-done]").hidden = true; $("[data-s-done]").classList.remove("is-audit");
     $("[data-s-status]").textContent = "Scanning"; $("[data-s-status]").classList.add("live");
     $("[data-s-verb]").textContent = "Reading"; $("[data-ag-canvas]").classList.remove("is-done"); $(".ag-livepill").lastChild.textContent = "Live";
     $("[data-s-host]").textContent = S.host;
@@ -1317,7 +1509,14 @@
     stage("open", "run", "Opening " + S.host);
     addFeed("act", "Opening " + S.host, "", "");
     var r;
-    try { r = await S.scanP; } catch (e) { showError(e); return; }
+    try { r = await S.scanP; }
+    catch (e) {
+      /* audit mode: the quick scan is only the old side reads. When a store blocks it (403) but our real-browser read
+         or the shopper's own browser (bookmark) got the page, the audit carries on with that read. */
+      var rd0 = CFG.audit ? await Promise.resolve(S.auditReadP).catch(function () { return null; }) : null;
+      if (rd0 && rd0.ok) { r = auditOnlyScan(rd0); addFeed("info", "The quick read was blocked by the store", "Carrying on with the full read" + (S.capture ? " from your browser" : " from our browser"), "", "reader"); }
+      else { showError(blockedError(e, rd0)); return; }
+    }
     var det = r.page || {};
     var want = S.inputs;
     if ((want.category && want.category !== det.category) || (want.aovBand && want.aovBand !== det.aovBand)) {
@@ -1326,6 +1525,8 @@
       catch (e) { /* keep the first read */ }
     }
     S.scan = r;
+    /* audit mode: the price everywhere is the page reader's (what a shopper sees), never the old scan's "typical" guess */
+    if (CFG.audit && r.page) { r.page.aov = S.v3price ? S.v3price.v : 0; if (S.v3price) r.page.currency = S.v3price.cur; r.page.aovBand = ""; }
     growthAfterScan(r);
     var lib = r.library || { signals: {}, barriers: {}, rootCauses: {} };
     rescore(r, lib.signals);
@@ -1371,7 +1572,7 @@
     stage("business", "run", "Working out what you sell");
     await goTo("reader", "price");
     var bizLine = [p.category || "Category not detected", p.aovBand ? bandLabel(p.aovBand) : p.aov ? money(p.aov, p.currency) : "", p.platform].filter(Boolean).join(" · ");
-    flash("price", "map", p.aov ? "Typical price " + money(p.aov, p.currency) : "Prices", AG.reader.c);
+    flash("price", "map", CFG.audit ? (S.v3price ? "Price " + money(S.v3price.v, S.v3price.cur) : "Price") : p.aov ? "Typical price " + money(p.aov, p.currency) : "Prices", AG.reader.c);
     await sleep(REDUCED ? 100 : 700);
     stage("business", "done", bizLine);
     addFeed("act", "Read the business", bizLine, "");
@@ -1435,8 +1636,8 @@
       await goTo("barrier", bRegs[bi]);
       for (var bj = 0; bj < here.length; bj++) {
         var bid = here[bj], bx = lib.barriers[bid];
-        setAgent("barrier", null, bid + (bx ? " " + tidy(bx.name) : "") + ": " + plural(bHit[bid], "issue"));
-        flash(bRegs[bi], "bar", bid + (bx ? " " + tidy(bx.name) : ""), AG.barrier.c);
+        setAgent("barrier", null, (bx ? tidy(bx.name) : "A buyer doubt") + ": " + plural(bHit[bid], "issue"));
+        flash(bRegs[bi], "bar", bx ? tidy(bx.name) : "Buyer doubt", AG.barrier.c);
         $("[data-t-bar]").textContent = String(++bShown);
         await sleep(REDUCED ? 120 : 760);
       }
@@ -1532,6 +1733,27 @@
     if (cro && cro.kind === "blend" && sideM && sideM.f) addSideFindings(S.report, sideM, cro.side.type);
     if (cro) { S.report.cro = { score: cro.score, up: cro.up, down: cro.down, f: cro.f, v: 4, n: cro.n, kind: cro.kind, labels: cro.labels, page: cro.page, side: cro.side }; addFeed("act", "Benchmarked the page", (lead ? "Visitor experience " : "Shopper experience ") + cro.score + "/100 against " + cro.n + " " + (lead ? "fintech, healthtech and service sites" : "sites") + " we measured the same way", "", "plan"); }
     else addFeed("info", "Limited score", "We couldn't measure the page on a phone, so the score uses its code only", "", "plan");
+    if (CFG.audit) {
+      setAgent("plan", null, "Checking the biggest problems a second time");
+      var A = await Promise.race([Promise.resolve(S.auditP), sleep(480000).then(function () { return { failed: "That took too long." }; })]);
+      A = A || { failed: S.v3Err || "" }; S.report.audit = A;
+      if (A.failed) addFeed("fail", "The audit didn't finish", A.failed, "", "barrier");
+      else addFeed("pass", "Page audit ready", plural((A.changes || []).length, "change") + " to make, each checked twice", "", "plan");
+      clearBoxes(); camTop();
+      stage("plan", "done", A.failed ? "Not finished" : "Ready");
+      clearInterval(tickT);
+      $("[data-s-status]").textContent = "Done"; $("[data-s-status]").classList.remove("live");
+      $("[data-s-verb]").textContent = "Finished reading"; $("[data-ag-canvas]").classList.add("is-done"); $(".ag-livepill").lastChild.textContent = "Done";
+      $("[data-s-verdict]").textContent = A.failed ? "Not finished" : "Page audit ready";
+      $("[data-s-done]").classList.add("is-audit"); /* a page audit has no single score, so the score ring stays hidden */
+      $("[data-s-done]").hidden = false;
+      S.running = false;
+      var aOpen = $("[data-s-open]");
+      if (aOpen) aOpen.onclick = function () { openReport(S.report, { mode: "live" }); };
+      await sleep(1500);
+      if (doc.body.getAttribute("data-an-view") === "scan") openReport(S.report, { mode: "live" });
+      return;
+    }
     if (win.TrooGrowth) {
       setAgent("plan", null, "Lining up buyer questions, policies and category leaders");
       try {
@@ -3187,6 +3409,12 @@
     opts = opts || {};
     S.mode = opts.mode || "live";
     var root = $("[data-report]");
+    if (R && R.audit && win.TrooAudit) {
+      root.innerHTML = R.audit.failed ? win.TrooAudit.failed(R.audit.failed) : win.TrooAudit.render(R.audit);
+      win.TrooAudit.wire(root, function () { win.location.href = win.location.pathname; });
+      show("report"); doc.title = "TrooCRO page audit: " + S.host;
+      return;
+    }
     rescore(R);
     var out = renderReport(R, opts);
     root.innerHTML = out.html;
@@ -3228,7 +3456,36 @@
     });
   }
 
+  /* ---------------- read from the shopper's own browser (bookmarklet) ---------------- */
+  (function () {
+    $$("[data-capture-link]").forEach(function (link) { if (!win.TROO_CAPTURE_SRC) return; {
+      var page = win.location.origin + win.location.pathname;
+      link.href = "javascript:" + encodeURIComponent(win.TROO_CAPTURE_SRC.replace("__ORIGIN__", win.location.origin).replace("__PAGE__", page));
+      link.addEventListener("click", function (e) { e.preventDefault(); alert("Drag this button to your bookmarks bar, then click it on the store's product page."); });
+    } });
+  })();
+  function receiveCapture() {
+    var bn = $("[data-an-capturing]"), msg = $("[data-an-capmsg]"), got = false;
+    var say = function (t) { if (msg) msg.textContent = t; if (bn) bn.hidden = false; };
+    say("Waiting for the page from your browser…");
+    win.addEventListener("message", function (e) {
+      if (got || e.source !== win.opener || !e.data || e.data.type !== "troo-capture" || typeof e.data.data !== "object") return;
+      got = true; say("Got the page from your browser. Reading it…");
+      v3call("/audit_capture", { data: e.data.data }, 90000).then(function (r) {
+        if (!r || !r.capture) { say((S.v3Err || "That page could not be read.") + " Open the product page and click the bookmark again."); return; }
+        try { history.replaceState(null, "", win.location.pathname); } catch (x) {}
+        if (bn) bn.hidden = true;
+        urlIn.value = r.url.replace(/^https?:\/\//i, "");
+        begin(r.url, r.capture);
+      });
+    });
+    if (win.opener) { try { win.opener.postMessage("troo-ready", "*"); } catch (x) {} }
+    else say("Open this from the TrooCRO bookmark on the store's product page.");
+    setTimeout(function () { if (!got) say("Nothing arrived from the store tab. Go back to it and click the bookmark again."); }, 15000);
+  }
+
   /* ---------------- boot ---------------- */
+  if (win.location.hash === "#troo-capture") { receiveCapture(); return; }
   var qs = new URLSearchParams(win.location.search);
   var shared = (qs.get("r") || "").replace(/[^a-z0-9]/gi, "");
   var preUrl = qs.get("url") || "";

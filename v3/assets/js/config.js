@@ -7,6 +7,10 @@ window.TROOCRO_CONFIG = {
   psiKey: "AIzaSyC4k7vaxwnNf_CkV_URwKRLls2A3xV1Tfk",
   /* v3 engine-faithful API: the local dev server, or the live troocro-analyze function (same handler as v2.1) */
   v3: /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? location.origin + "/api" : "https://mrfixorpmhrnkxhqzesn.supabase.co/functions/v1/troocro-analyze",
+  /* Page audit (CRO core spec, three pillars, no combined score). Set to false to fall back to v3.
+     Its /audit_* calls go to their own function (troocro-audit), so the live v3 function is never changed by them. */
+  audit: true,
+  auditApi: /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? location.origin + "/api" : "https://mrfixorpmhrnkxhqzesn.supabase.co/functions/v1/troocro-audit",
   whatsapp: "919810483552",
   caseStudies: "https://troopod.io/case-studies"
 };

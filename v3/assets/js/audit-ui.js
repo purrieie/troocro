@@ -41,7 +41,7 @@
     if (miss.length || part.length) x += '<section class="rx-sec">' + head("Open buyer doubts", "Questions a shopper is likely asking that the page doesn’t settle yet.") + '<div class="rx-grid g340">' + doubtCol("Not answered on the page", "bad", "Not answered", miss) + doubtCol("Answered only in part", "mid", "In part", part) + "</div></section>";
     var first = (p0 && p0.label.toLowerCase()) || "a first-time shopper";
     x += '<section class="rx-sec">' + head("What to change first", "Ranked by how much each one likely blocks a sale for " + esc(first) + ".") + changes(R.changes || []) + "</section>";
-    x += findingsSec(R.findings || []);
+    x += findingsSec(R.findings || []) + checksSec(R.checks, (R.findings || []).length);
     if (B.worries && B.worries.length) x += '<section class="rx-sec">' + head("What reviewers ask about") + '<article class="rx-card rx-list">' + B.worries.slice(0, 6).map(function (w) { return '<div class="rx-li"><i class="b-mid"></i><div><b>' + esc(w.worry) + "</b><span>" + w.mentions + " review" + (w.mentions > 1 ? "s" : "") + "</span></div></div>"; }).join("") + "</article></section>";
     return x;
   }
@@ -62,6 +62,18 @@
             return '<div class="rx-frow"><span class="rx-pill p-' + IMP[f.impact][0] + '">' + IMP[f.impact][2] + " · " + f.impact + '</span><div class="rx-fm"><b>' + esc(f.name) + (f.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + "</b>" + (f.saw ? '<span class="rx-m">' + esc(f.saw) + "</span>" : "") +
               ((f.doubts || []).length || CHK[f.checked] ? '<div class="rx-ftags">' + (f.doubts || []).map(function (d) { return "<span>" + esc(d) + "</span>"; }).join("") + (CHK[f.checked] ? '<span class="c-' + f.checked + '">' + CHK[f.checked] + "</span>" : "") + "</div>" : "") + "</div></div>";
           }).join("") + "</details>";
+      }).join("") + "</div></section>";
+  }
+  /* Every other check (100% visibility): could not tell, passed, does not apply, each with its reason */
+  function checksSec(C, nFail) {
+    if (!C) return "";
+    var G = [["cannot_tell", "Couldn’t check from the page", "The page didn’t show enough to decide, for example things seen only after tapping into checkout."], ["pass", "Passed", "What we saw on the page."], ["not_applicable", "Doesn’t apply to this product", "Why each one was ruled out."]];
+    var tot = nFail + G.reduce(function (a, g) { return a + (C[g[0]] || []).length; }, 0);
+    return '<section class="rx-sec">' + head("Everything else we checked", tot + " checks in all: " + nFail + " failed (above), " + (C.cannot_tell || []).length + " couldn’t be checked, " + (C.pass || []).length + " passed, " + (C.not_applicable || []).length + " don’t apply. Speed checks are in the Speed tab.") +
+      '<div class="rx-fgroups">' + G.map(function (g) {
+        var L = C[g[0]] || []; if (!L.length) return "";
+        return '<details class="rx-card rx-fg rx-oth-' + g[0] + '"><summary><b>' + g[1] + '</b><span class="rx-k">' + L.length + " check" + (L.length > 1 ? "s" : "") + '</span><i class="rx-chev" aria-hidden="true"></i></summary><p class="rx-m rx-fgnote">' + g[2] + "</p>" +
+          L.map(function (c) { return '<div class="rx-frow rx-orow"><div class="rx-fm"><b>' + esc(c.name) + "</b>" + (c.why ? '<span class="rx-m">' + esc(c.why) + "</span>" : "") + '</div><span class="rx-ocause">' + esc(c.cause) + "</span></div>"; }).join("") + "</details>";
       }).join("") + "</div></section>";
   }
   function doubtCol(title, t, p, list) {

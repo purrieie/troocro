@@ -496,3 +496,12 @@ body.an-app a, body.an-app button, body.an-app [role="tab"] { -webkit-tap-highli
 .rx-ftags .c-disagreed { color: #F5CD7A; border-color: #4A3A1C; }
 .rx-ftags .c-unconfirmed { color: #9A9AA3; }
 @media (max-width: 720px) { .rx-fg > summary { padding: 16px; } .rx-frow { padding: 12px 16px; gap: 10px; } .rx-frow > .rx-pill { min-width: 84px; } }
+/* everything else we checked */
+.rx-fgnote { padding: 0 22px 12px; }
+.rx-orow { justify-content: space-between; }
+.rx-orow .rx-fm { flex: 1; }
+.rx-ocause { flex: none; font-size: 11px; color: #9A9AA3; border: 1px solid #2A2A30; padding: 2px 8px; border-radius: 999px; white-space: nowrap; margin-top: 2px; }
+.rx-oth-pass > summary b::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #5FD38D; margin-right: 10px; vertical-align: 2px; }
+.rx-oth-cannot_tell > summary b::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #E8B04B; margin-right: 10px; vertical-align: 2px; }
+.rx-oth-not_applicable > summary b::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #55555D; margin-right: 10px; vertical-align: 2px; }
+@media (max-width: 720px) { .rx-fgnote { padding: 0 16px 10px; } .rx-ocause { display: none; } }

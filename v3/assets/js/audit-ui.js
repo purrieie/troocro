@@ -41,8 +41,28 @@
     if (miss.length || part.length) x += '<section class="rx-sec">' + head("Open buyer doubts", "Questions a shopper is likely asking that the page doesn’t settle yet.") + '<div class="rx-grid g340">' + doubtCol("Not answered on the page", "bad", "Not answered", miss) + doubtCol("Answered only in part", "mid", "In part", part) + "</div></section>";
     var first = (p0 && p0.label.toLowerCase()) || "a first-time shopper";
     x += '<section class="rx-sec">' + head("What to change first", "Ranked by how much each one likely blocks a sale for " + esc(first) + ".") + changes(R.changes || []) + "</section>";
+    x += findingsSec(R.findings || []);
     if (B.worries && B.worries.length) x += '<section class="rx-sec">' + head("What reviewers ask about") + '<article class="rx-card rx-list">' + B.worries.slice(0, 6).map(function (w) { return '<div class="rx-li"><i class="b-mid"></i><div><b>' + esc(w.worry) + "</b><span>" + w.mentions + " review" + (w.mentions > 1 ? "s" : "") + "</span></div></div>"; }).join("") + "</article></section>";
     return x;
+  }
+  /* Every failed check, grouped by root cause, P0 first, so the team sees all the scan saw and picks (Neeraj, 29 Nov:
+     "give all, P0 P1 P2, across all root causes") */
+  var IMP = { High: ["bad", 0, "P0"], Medium: ["mid", 1, "P1"], Lower: ["none", 2, "P2"] }, CHK = { confirmed: "Double-checked", unconfirmed: "Not double-checked", disagreed: "Second check disagreed", single: "" };
+  function findingsSec(F) {
+    if (!F.length) return "";
+    var groups = {}; F.forEach(function (f) { (groups[f.cause] = groups[f.cause] || []).push(f); });
+    var order = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
+    var n = function (imp) { return F.filter(function (f) { return f.impact === imp; }).length; };
+    return '<section class="rx-sec">' + head("Everything we found", F.length + " checks this page fails: " + n("High") + " P0 (high impact), " + n("Medium") + " P1 (medium), " + n("Lower") + " P2 (lower). Grouped by what is behind them.") +
+      '<div class="rx-fgroups">' + order.map(function (c, gi) {
+        var L = groups[c].slice().sort(function (a, b) { return IMP[a.impact][1] - IMP[b.impact][1]; });
+        var cnt = ["High", "Medium", "Lower"].map(function (k) { var m = L.filter(function (f) { return f.impact === k; }).length; return m ? IMP[k][2] + " " + m : ""; }).filter(Boolean).join(" · ");
+        return '<details class="rx-card rx-fg"' + (gi === 0 ? " open" : "") + '><summary><b>' + esc(c) + '</b><span class="rx-k">' + L.length + " check" + (L.length > 1 ? "s" : "") + " · " + cnt + '</span><i class="rx-chev" aria-hidden="true"></i></summary>' +
+          L.map(function (f) {
+            return '<div class="rx-frow"><span class="rx-pill p-' + IMP[f.impact][0] + '">' + IMP[f.impact][2] + " · " + f.impact + '</span><div class="rx-fm"><b>' + esc(f.name) + (f.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + "</b>" + (f.saw ? '<span class="rx-m">' + esc(f.saw) + "</span>" : "") +
+              ((f.doubts || []).length || CHK[f.checked] ? '<div class="rx-ftags">' + (f.doubts || []).map(function (d) { return "<span>" + esc(d) + "</span>"; }).join("") + (CHK[f.checked] ? '<span class="c-' + f.checked + '">' + CHK[f.checked] + "</span>" : "") + "</div>" : "") + "</div></div>";
+          }).join("") + "</details>";
+      }).join("") + "</div></section>";
   }
   function doubtCol(title, t, p, list) {
     return '<article class="rx-card rx-list"><div class="rx-ch rx-lh"><b>' + title + "</b>" + pill(t, p) + "</div>" + (list.length ? list.map(function (b) { return '<div class="rx-li"><i class="b-' + t + '"></i><div><b>' + esc(b.name) + "</b>" + (b.question ? "<span>" + esc(b.question) + "</span>" : "") + "</div></div>"; }).join("") : '<p class="rx-m">None.</p>') + "</article>";
@@ -50,7 +70,7 @@
   function changes(list) {
     if (!list.length) return '<p class="rx-m">No change was confirmed by the second read, so none is listed.</p>';
     return '<div class="rx-changes">' + list.map(function (c, i) {
-      return '<article class="rx-card rx-chg' + (i >= 5 ? " more" : "") + '"' + (i >= 5 ? " hidden" : "") + '><span class="rx-n">' + (i + 1) + '</span><div class="rx-cm"><h3>' + esc(c.title) + (c.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + "</h3>" + (c.change ? '<p class="rx-t">' + esc(c.change) + "</p>" : "") + (c.why ? '<p class="rx-m">' + esc(c.why) + "</p>" : "") + "</div>" +
+      return '<article class="rx-card rx-chg' + (i >= 5 ? " more" : "") + '"' + (i >= 5 ? " hidden" : "") + '><span class="rx-n">' + (i + 1) + '</span><div class="rx-cm"><h3>' + esc(c.title) + (c.from_reviews ? ' <em class="rx-rev">From your reviews</em>' : "") + (c.checked ? ' <em class="rx-dc">Double-checked</em>' : "") + "</h3>" + (c.change ? '<p class="rx-t">' + esc(c.change) + "</p>" : "") + (c.why ? '<p class="rx-m">' + esc(c.why) + "</p>" : "") + "</div>" +
         (c.evidence ? '<div class="rx-ev"><span>On the page now</span><p>' + esc(c.evidence) + "</p></div>" : "") + "</article>";
     }).join("") + "</div>" + (list.length > 5 ? '<button type="button" class="rx-btn ghost sm" data-au-more>Show ' + (list.length - 5) + " more</button>" : "");
   }
@@ -130,7 +150,7 @@
     var out = '<div class="rx-wrap">';
     out += '<header class="rx-hero"><div class="rx-id">' + (p.image ? '<img src="' + esc(p.image) + '" alt="" loading="lazy">' : '<span class="rx-noimg">Photo</span>') + '<div class="rx-idt"><span class="rx-eyebrow">' + esc(h.label || "Page audit") + "</span><h1>" + esc(p.title) + '</h1><div class="rx-meta"><span>' + esc(p.brand) + "</span>" + (p.price ? sep + "<span>" + esc(money(p.price, p.currency)) + "</span>" : "") + sep + "<span>" + esc(p.category) + "</span>" + sep + '<a href="' + esc(p.url) + '" target="_blank" rel="noopener">Open page</a></div></div></div>' +
       '<div class="rx-bar"><div class="rx-chips">' + chip("Goal", h.goal) + chip("Device", h.device) + chip("Visitors", h.traffic) + chip("Buyer types", String(h.buyers || "").replace(/^Buyer types: /, "").replace(/^assumed from category$/, "From category")) + chip("Sections", /opened every section/i.test(h.reader || "") ? "All opened" : h.reader) + "</div>" +
-      "<p>Three separate reads of one product page, one per tab. No combined score. Findings are likely, not confirmed, and every change listed was checked twice.</p></div></header>";
+      "<p>Three separate reads of one product page, one per tab. No combined score. Findings are likely, not confirmed. Ones marked Double-checked were confirmed by a second, separate check.</p></div></header>";
     out += tabs(P);
     out += '<section class="rx-panel" role="tabpanel" id="rx-p-cro" aria-labelledby="rx-t-cro" data-au-panel="cro">' + croPanel(P.customer || {}, R) + "</section>";
     out += '<section class="rx-panel" role="tabpanel" id="rx-p-design" aria-labelledby="rx-t-design" data-au-panel="design" hidden>' + designPanel(P.ui || {}, R.annotations) + "</section>";

@@ -476,3 +476,23 @@ body.an-app a, body.an-app button, body.an-app [role="tab"] { -webkit-tap-highli
   .ag2 .ag-nowcheck b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; line-height: 1.35; }
   .ag2 .ag-phonecard { gap: 12px; padding: 14px; }
 }
+
+/* ---------- report: everything we found (all failed checks by root cause) ---------- */
+.rx-dc { font-style: normal; font-size: 12px; font-weight: 500; color: #86EFAC; border: 1px solid #1E3A28; background: #0F2017; padding: 2px 8px; border-radius: 999px; margin-left: 6px; white-space: nowrap; }
+.rx-fgroups { display: flex; flex-direction: column; gap: 12px; }
+.rx-fg { padding: 0; gap: 0; }
+.rx-fg > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 18px 22px; }
+.rx-fg > summary::-webkit-details-marker { display: none; }
+.rx-fg > summary b { font-size: 16px; font-weight: 600; flex: 1; }
+.rx-chev { width: 10px; height: 10px; border-right: 2px solid #9A9AA3; border-bottom: 2px solid #9A9AA3; transform: rotate(45deg); transition: transform .2s; margin-top: -4px; }
+.rx-fg[open] .rx-chev { transform: rotate(-135deg); margin-top: 4px; }
+.rx-frow { display: flex; gap: 14px; align-items: flex-start; padding: 14px 22px; border-top: 1px solid #1A1A1F; }
+.rx-frow > .rx-pill { min-width: 92px; text-align: center; margin-top: 1px; align-self: flex-start; }
+.rx-fm { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rx-fm > b { font-weight: 500; }
+.rx-ftags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.rx-ftags span { font-size: 11px; color: #B4B4BC; border: 1px solid #2A2A30; padding: 2px 8px; border-radius: 999px; }
+.rx-ftags .c-confirmed { color: #86EFAC; border-color: #1E3A28; }
+.rx-ftags .c-disagreed { color: #F5CD7A; border-color: #4A3A1C; }
+.rx-ftags .c-unconfirmed { color: #9A9AA3; }
+@media (max-width: 720px) { .rx-fg > summary { padding: 16px; } .rx-frow { padding: 12px 16px; gap: 10px; } .rx-frow > .rx-pill { min-width: 84px; } }

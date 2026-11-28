@@ -124,6 +124,7 @@
     formErr.textContent = "";
     if (S.offline) { openSample(); return; }
     S.url = u; S.host = hostOf(u); S.detected = null; S.mode = "live";
+    S.runId = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8); /* one id per audit: every step is logged under it (audit_run_log) */
     S.scanP = api("/scan", { url: u }, { timeout: 45000 }).then(function (r) { S.detected = r; onDetected(r); return r; });
     S.scanP.catch(function (e) { if (!CFG.audit && doc.body.getAttribute("data-an-view") === "questions") showError(e); }); /* audit mode reads the page in a browser: a failed quick fetch is not fatal */
     /* v3: the quiz's category comes from the v3 reader, not the old keyword guess */
@@ -1300,6 +1301,7 @@
     if (!B || !win.AbortController) return Promise.resolve(null);
     var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, ms || 90000);
     if (S.capture && /^\/audit_/.test(path)) body = Object.assign({ capture: S.capture }, body);
+    if (/^\/audit_/.test(path)) body = Object.assign({ run: S.runId || null, client: { device: (S.inputs && S.inputs.device) || null, w: win.innerWidth, touch: "ontouchstart" in win } }, body);
     return fetch(B + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal })
       .then(function (x) { return x.json(); })
       .then(function (d) { clearTimeout(t); if (d && (d.ok !== false || d.pending)) return d; S.v3Err = (d && d.reason) || S.v3Err || ""; return null; })
